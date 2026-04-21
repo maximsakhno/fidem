@@ -1,0 +1,33 @@
+default_install_hook_types = ["pre-commit", "commit-msg"]
+
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v6.0.0"
+hooks = [
+    { id = "trailing-whitespace", stages = ["pre-commit"] },
+    { id = "end-of-file-fixer", stages = ["pre-commit"] },
+    { id = "check-yaml", stages = ["pre-commit"] },
+    { id = "check-toml", stages = ["pre-commit"] },
+]
+
+[[repos]]
+repo = "https://github.com/astral-sh/ruff-pre-commit"
+rev = "v0.15.11"
+hooks = [
+    { id = "ruff-check", args = ["--fix"], types_or = ["python", "pyi"], stages = ["pre-commit"] },
+    { id = "ruff-format", types_or = ["python", "pyi"], stages = ["pre-commit"] },
+]
+
+[[repos]]
+repo = "https://github.com/DetachHead/basedpyright-prek-mirror"
+rev = "1.39.3"
+hooks = [
+    { id = "basedpyright", stages = ["pre-commit"] },
+]
+
+[[repos]]
+repo = "https://github.com/compilerla/conventional-pre-commit"
+rev = "v4.4.0"
+hooks = [
+    { id = "conventional-pre-commit", stages = ["commit-msg"] },
+]
