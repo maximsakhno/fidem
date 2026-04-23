@@ -1,29 +1,28 @@
-from collections.abc import Callable, Collection, Generator, Hashable
+from collections.abc import Callable, Collection, Generator
 from dataclasses import dataclass
 from typing import Any
 
-from fidem.intents import UserIntent
-from fidem.serialization import Serializable
+from fidem.intents import DatabaseWriteIntent, ReadIntent, WriteIntent
 
-type OperationId = Hashable
+type OperationId = str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class OperationContext:
     operation_id: OperationId
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CommandContext(OperationContext):
     pass
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class EventContext(OperationContext):
     pass
 
 
-class Operation[ResultT](Serializable):
+class Operation[ResultT]:
     pass
 
 
@@ -35,36 +34,55 @@ class Event(Operation[None]):
     pass
 
 
+type OperationResult[
+    ResultT,
+    EventOutT: Event | None = None,
+] = (
+    ResultT
+    | WriteIntent[ResultT]
+    | Collection[EventOutT]
+    | tuple[ResultT, Collection[EventOutT]]
+    | tuple[DatabaseWriteIntent[ResultT], Collection[EventOutT] | Callable[[ResultT], Collection[EventOutT]]]
+)
 type OperationGenerator[
+    IntentT: ReadIntent[Any] | WriteIntent[Any] = Any,
     ResultT = Any,
     EventOutT: Event | None = None,
 ] = Generator[
-    UserIntent[Any],
+    IntentT,
     Any,
-    ResultT | Collection[EventOutT] | tuple[ResultT, Collection[EventOutT]],
+    OperationResult[ResultT, EventOutT],
 ]
 type OperationHandler[
     OperationContextT: OperationContext = Any,
     OperationT: Operation[Any] = Any,
+    IntentT: ReadIntent[Any] | WriteIntent[Any] = Any,
     ResultT = Any,
     EventOutT: Event | None = None,
 ] = Callable[
     [OperationContextT, OperationT],
-    OperationGenerator[ResultT, EventOutT],
+    OperationGenerator[IntentT, ResultT, EventOutT],
 ]
 type OperationMiddleware[
     OperationContextT: OperationContext = Any,
     OperationT: Operation[Any] = Any,
+    IntentT: ReadIntent[Any] | WriteIntent[Any] = Any,
     ResultT = Any,
     EventOutT: Event | None = None,
 ] = Callable[
-    [OperationHandler[OperationContextT, OperationT, ResultT, EventOutT]],
-    OperationHandler[OperationContextT, OperationT, ResultT, EventOutT],
+    [OperationHandler[OperationContextT, OperationT, IntentT, ResultT, EventOutT]],
+    OperationHandler[OperationContextT, OperationT, IntentT, ResultT, EventOutT],
 ]
+
+
 type CommandGenerator[
     ResultT = Any,
     EventOutT: Event | None = None,
-] = OperationGenerator[ResultT, EventOutT]
+] = OperationGenerator[
+    ReadIntent[Any] | WriteIntent[Any],
+    ResultT,
+    EventOutT,
+]
 type CommandHandler[
     CommandT: Command[Any] = Any,
     ResultT = Any,
@@ -72,6 +90,26 @@ type CommandHandler[
 ] = OperationHandler[
     CommandContext,
     CommandT,
+    ReadIntent[Any] | WriteIntent[Any],
+    ResultT,
+    EventOutT,
+]
+type ConsistentEphemeralCommandGenerator[
+    ResultT = Any,
+    EventOutT: Event | None = None,
+] = OperationGenerator[
+    ReadIntent[Any],
+    ResultT,
+    EventOutT,
+]
+type ConsistentEphemeralCommandHandler[
+    CommandT: Command[Any] = Any,
+    ResultT = Any,
+    EventOutT: Event | None = None,
+] = OperationHandler[
+    CommandContext,
+    CommandT,
+    ReadIntent[Any],
     ResultT,
     EventOutT,
 ]
@@ -82,12 +120,16 @@ type CommandMiddleware[
 ] = OperationMiddleware[
     CommandContext,
     CommandT,
+    ReadIntent[Any] | WriteIntent[Any],
     ResultT,
     EventOutT,
 ]
+
+
 type EventGenerator[
     EventOutT: Event | None = None,
 ] = OperationGenerator[
+    ReadIntent[Any] | WriteIntent[Any],
     None,
     EventOutT,
 ]
@@ -97,6 +139,7 @@ type EventHandler[
 ] = OperationHandler[
     EventContext,
     EventT,
+    ReadIntent[Any] | WriteIntent[Any],
     None,
     EventOutT,
 ]
@@ -106,6 +149,7 @@ type EventMiddleware[
 ] = OperationMiddleware[
     EventContext,
     EventT,
+    ReadIntent[Any] | WriteIntent[Any],
     None,
     EventOutT,
 ]

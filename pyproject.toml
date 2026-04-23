@@ -55,8 +55,8 @@ include = ["src", "tests"]
 exclude = ["**/__pycache__", ".venv", "build", "dist"]
 pythonVersion = "3.13"
 typeCheckingMode = "strict"
-reportMissingTypeStubs = "none"
-reportAny = "none"
+reportUnknownVariableType = "none"
+reportUnknownArgumentType = "none"
 reportUnknownMemberType = "none"
 
 [tool.ruff]
@@ -89,6 +89,9 @@ addopts = [
     "--strict-config",
     "-p",
     "no:cacheprovider",
+    "--cov=src/fidem",
+    "--cov-branch",
+    "--cov-report=term-missing",
 ]
 testpaths = ["tests"]
 asyncio_mode = "auto"
