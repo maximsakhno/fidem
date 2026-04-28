@@ -1,30 +1,30 @@
-from collections.abc import Awaitable, Callable, Generator, Hashable
+from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from typing import Any
 
-from fidem.serialization import Serializable
-
-type IntentId = Hashable
+type IntentId = str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class IntentContext:
     intent_id: IntentId
+
+
+@dataclass(frozen=True, slots=True)
+class IntentCompensationContext[ResultT](IntentContext):
+    original_context: IntentContext
+    original_result: ResultT
 
 
 class Intent[ResultT]:
     pass
 
 
-class UserIntent[ResultT](Intent[ResultT], Serializable):
+class ReadIntent[ResultT](Intent[ResultT]):
     pass
 
 
-class IntegrationIntent[ResultT](UserIntent[ResultT]):
-    pass
-
-
-class ReadIntent[ResultT](IntegrationIntent[ResultT]):
+class WriteIntent[ResultT](Intent[ResultT]):
     pass
 
 
@@ -32,57 +32,36 @@ class DatabaseReadIntent[ResultT](ReadIntent[ResultT]):
     pass
 
 
-class ExternalReadIntent[ResultT](ReadIntent[ResultT]):
-    pass
-
-
-class WriteIntent[ResultT](IntegrationIntent[ResultT]):
-    pass
-
-
 class DatabaseWriteIntent[ResultT](WriteIntent[ResultT]):
     pass
 
 
-class ExternalWriteIntent[ResultT](WriteIntent[ResultT]):
-    pass
-
-
-type DatabaseIntent[ResultT] = DatabaseReadIntent[ResultT] | DatabaseWriteIntent[ResultT]
-type ExternalIntent[ResultT] = ExternalReadIntent[ResultT] | ExternalWriteIntent[ResultT]
-
-
 type IntentHandler[
-    ResourceT = Any,
-    IntentT: IntegrationIntent[Any] = Any,
+    IntentContextT: IntentContext = Any,
+    IntentT: ReadIntent[Any] | WriteIntent[Any] = Any,
     ResultT = Any,
 ] = Callable[
-    [ResourceT, IntentContext, IntentT],
+    [IntentContextT, IntentT],
     Awaitable[ResultT],
 ]
-type IntentCompensationHandler[
-    ResourceT = Any,
-    IntentT: WriteIntent[Any] = Any,
-    ResultT = Any,
-] = Callable[
-    [ResourceT, IntentContext, IntentT, ResultT],
-    Awaitable[None],
-]
 type IntentMiddleware[
-    ResourceT = Any,
-    IntentT: IntegrationIntent[Any] = Any,
+    IntentContextT: IntentContext = Any,
+    IntentT: ReadIntent[Any] | WriteIntent[Any] = Any,
     ResultT = Any,
 ] = Callable[
-    [IntentHandler[ResourceT, IntentT, ResultT]],
-    IntentHandler[ResourceT, IntentT, ResultT],
+    [IntentHandler[IntentContextT, IntentT, ResultT]],
+    IntentHandler[IntentContextT, IntentT, ResultT],
 ]
-type IntentCompensationMiddleware[
-    ResourceT = Any,
-    IntentT: WriteIntent[Any] = Any,
+
+
+type DatabaseIntentHandler[
+    SessionT = Any,
+    IntentContextT: IntentContext = Any,
+    IntentT: DatabaseReadIntent[Any] | DatabaseWriteIntent[Any] = Any,
     ResultT = Any,
 ] = Callable[
-    [IntentCompensationHandler[ResourceT, IntentT, ResultT]],
-    IntentCompensationHandler[ResourceT, IntentT, ResultT],
+    [SessionT, IntentContextT, IntentT],
+    Awaitable[ResultT],
 ]
 
 

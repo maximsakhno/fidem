@@ -14,13 +14,11 @@ lint:
     uv run ruff format src tests --check
     uv run basedpyright src tests
 
-test *args:
-    uv run pytest {{args}}
-
-cov-flags := "--cov=src/fidem --cov-branch --cov-report=term-missing"
+test:
+    uv run pytest --no-cov
 
 test-cov:
-    just --justfile {{justfile()}} test {{cov-flags}} --cov-report=html
+    uv run pytest --cov-report=html
 
 test-ci:
-    just --justfile {{justfile()}} test {{cov-flags}} --cov-report=xml --cov-fail-under=85
+    uv run pytest --cov-report=xml --cov-fail-under=85
