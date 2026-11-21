@@ -5,57 +5,73 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  # Otherwise `uv run` in the Makefile reinstalls the default dependency groups on top of the job's own group.
+  UV_NO_SYNC: "1"
+
+concurrency:
+  # Pushes to main are grouped by commit so that every merged commit gets a full check.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: "Checkout code"
-        uses: actions/checkout@v6
-
-      - name: Set up Just
-        uses: extractions/setup-just@v4
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v10.4.0
         with:
           enable-cache: true
 
       - name: Install the project
-        run: uv sync --locked --dev
+        run: uv sync --locked --no-default-groups --group lint
 
       - name: Lint
-        run: just lint
+        run: make lint
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
         python-version:
           - "3.13"
           - "3.14"
     steps:
-      - name: "Checkout code"
-        uses: actions/checkout@v6
-
-      - name: Set up Just
-        uses: extractions/setup-just@v4
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v10.4.0
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
 
       - name: Install the project
-        run: uv sync --locked --dev
+        run: uv sync --locked --no-default-groups --group test
 
       - name: Test
-        run: just test-ci
+        run: make test-ci
 
+      # Coverage barely differs between Python versions, and a release tag points to a commit already uploaded from main.
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
+        if: matrix.python-version == '3.13' && github.ref_type != 'tag'
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

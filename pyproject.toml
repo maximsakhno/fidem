@@ -37,62 +37,140 @@ Issues = "https://github.com/maximsakhno/fidem/issues"
 Documentation = "https://github.com/maximsakhno/fidem#readme"
 
 [dependency-groups]
-dev = [
-    "basedpyright>=1.39.3",
-    "prek>=0.3.9",
-    "pytest>=9.0.3",
-    "pytest-asyncio>=1.3.0",
+lint = [
+    "ruff>=0.17.6",
+    "basedpyright>=1.40.2",
+    "prek>=0.5.11",
+    # basedpyright also checks tests/.
+    { include-group = "test" },
+]
+test = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.11",
+    "pytest-xdist>=3.8.0",
+    "pytest-randomly>=5.1.0",
+    "pytest-timeout>=2.4.0",
 ]
 
+[tool.uv]
+default-groups = "all"
+
 [build-system]
-requires = ["uv_build>=0.9.10,<0.10.0"]
+requires = ["uv_build>=0.13.9,<0.14"]
 build-backend = "uv_build"
 
 [tool.basedpyright]
-include = ["src", "tests"]
+include = ["src", "tests", "examples"]
 exclude = ["**/__pycache__", ".venv", "build", "dist"]
 pythonVersion = "3.13"
-typeCheckingMode = "strict"
-reportUnknownVariableType = "none"
-reportUnknownArgumentType = "none"
-reportUnknownMemberType = "none"
+typeCheckingMode = "recommended"
+
+# Too noisy with Any in signatures.
+reportAny = false
+reportExplicitAny = false
+# Unknown types come from untyped libraries.
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+# Libraries without py.typed are allowed.
+reportMissingTypeStubs = false
+# Style requirements, not errors.
+reportUnusedCallResult = false # forces `_ = f()`
+reportImplicitOverride = false # requires @override on every override
+reportImportCycles = false     # counts cycles through TYPE_CHECKING too
+# Ruff ARG checks unused parameters with fewer false positives.
+reportUnusedParameter = false
+# Ruff B008 checks calls in defaults with fewer false positives.
+reportCallInDefaultInitializer = false
+# Ruff ISC checks implicit concatenation with fewer false positives.
+reportImplicitStringConcatenation = false
 
 [tool.ruff]
 line-length = 120
 target-version = "py313"
+output-format = "grouped"
+show-fixes = true
 
 [tool.ruff.lint]
 select = [
+    "F",     # Pyflakes
     "E",     # pycodestyle errors
     "W",     # pycodestyle warnings
-    "F",     # Pyflakes
-    "I",     # isort
-    "N",     # pep8-naming
-    "UP",    # pyupgrade
     "B",     # flake8-bugbear
-    "C4",    # flake8-comprehensions
-    "SIM",   # flake8-simplify
+    "ISC",   # flake8-implicit-str-concat
     "ASYNC", # flake8-async
+    "LOG",   # flake8-logging
+    "G",     # flake8-logging-format
+    "DTZ",   # flake8-datetimez
+    "BLE",   # flake8-blind-except
+    "TRY",   # tryceratops
+    "RUF",   # Ruff-specific rules
+    "UP",    # pyupgrade
+    "I",     # isort
+    "PGH",   # pygrep-hooks
+    "T10",   # flake8-debugger
+    "T20",   # flake8-print
+    "ARG",   # flake8-unused-arguments
+    "S",     # flake8-bandit
+    "PL",    # Pylint
+    "SIM",   # flake8-simplify
+    "C4",    # flake8-comprehensions
+    "PIE",   # flake8-pie
+    "RSE",   # flake8-raise
+    "RET",   # flake8-return
+    "N",     # pep8-naming
+    "C90",   # mccabe
+    "PERF",  # Perflint
+    "FURB",  # refurb
+    "PT",    # flake8-pytest-style
 ]
 ignore = [
-    "E501",  # line too long, handled by formatter
+    "E501",    # line length is handled by the formatter
+    "RUF001",  # ambiguous characters fire on any Cyrillic text
+    "RUF002",
+    "RUF003",
+    "TRY003",  # long messages in raise are fine
+    "RET504",  # assignment before return is often more readable
+    "PLR09",   # complexity is checked by C90
+    "PLR2004", # magic values are too noisy
+    "PLC0415", # lazy and circular imports need imports inside functions
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use asserts, fake secrets, random and fakes with unused arguments.
+"tests/**" = ["S101", "S105", "S106", "S311", "ARG"]
+# Assertion helpers for library users' tests.
+"src/fidem/testing.py" = ["S101", "PT017"]
+# Examples print results and implement handlers with a fixed signature.
+"examples/**" = ["T201", "ARG"]
+
+[tool.ruff.lint.flake8-unused-arguments]
+# Callbacks and wrappers accept *args/**kwargs they do not use.
+ignore-variadic-names = true
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
 
 [tool.pytest.ini_options]
 minversion = "9.0"
-addopts = [
-    "-ra",
-    "-q",
-    "--strict-markers",
-    "--strict-config",
-    "-p",
-    "no:cacheprovider",
-    "--cov=src/fidem",
-    "--cov-branch",
-    "--cov-report=term-missing",
-]
 testpaths = ["tests"]
+strict = true
+filterwarnings = ["error"]
+timeout = 30
+addopts = ["-ra"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+
+[tool.coverage.html]
+show_contexts = true # list the tests that run each line
+skip_covered = false # the HTML report shows fully covered files too

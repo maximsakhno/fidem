@@ -87,7 +87,7 @@ class TestExecute:
             effect_defs=[EffectDef(TestInternalEffect, AsyncMock(side_effect=effect_error))],
         )
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="effect_error") as exc_info:
             await environment.execute(TestCommand())
 
         assert exc_info.value is effect_error
@@ -97,7 +97,7 @@ class TestExecute:
             nonlocal is_execution_plan_closed
             try:
                 yield self._make_instruction()
-            except Exception:
+            except Exception:  # noqa: BLE001 - checks that no error reaches the execution plan
                 return "swallowed"
             finally:
                 is_execution_plan_closed = True

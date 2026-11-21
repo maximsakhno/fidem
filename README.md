@@ -1,5 +1,8 @@
 # fidem
 
+[![CI](https://github.com/maximsakhno/fidem/actions/workflows/ci.yml/badge.svg)](https://github.com/maximsakhno/fidem/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/maximsakhno/fidem/graph/badge.svg)](https://codecov.io/gh/maximsakhno/fidem)
+
 Фреймворк для бизнес-логики на основе системы эффектов. Обработчик сообщения — генератор: он не выполняет побочные эффекты сам, а yield-ит их описания и получает обратно результаты. Фреймворк знает каждое действие приложения, и за счёт этого даёт из коробки outbox, durable-выполнение, идемпотентность, ретраи, кеши, логи, метрики, трассировку и дашборд.
 
 Этот документ — единый источник истины о том, как устроен фреймворк. Статусы:

@@ -11,23 +11,36 @@ hooks = [
 ]
 
 [[repos]]
-repo = "https://github.com/astral-sh/ruff-pre-commit"
-rev = "v0.15.11"
-hooks = [
-    { id = "ruff-check", args = ["--fix"], types_or = ["python", "pyi"], stages = ["pre-commit"] },
-    { id = "ruff-format", types_or = ["python", "pyi"], stages = ["pre-commit"] },
-]
+repo = "local"
 
-[[repos]]
-repo = "https://github.com/DetachHead/basedpyright-prek-mirror"
-rev = "1.39.3"
-hooks = [
-    { id = "basedpyright", stages = ["pre-commit"] },
-]
+[[repos.hooks]]
+id = "ruff-check"
+name = "ruff check"
+entry = "uv run ruff check --fix --force-exclude"
+language = "system"
+types_or = ["python", "pyi"]
+stages = ["pre-commit"]
+
+[[repos.hooks]]
+id = "ruff-format"
+name = "ruff format"
+entry = "uv run ruff format --force-exclude"
+language = "system"
+types_or = ["python", "pyi"]
+stages = ["pre-commit"]
+
+[[repos.hooks]]
+id = "basedpyright"
+name = "basedpyright"
+entry = "uv run basedpyright"
+language = "system"
+types_or = ["python", "pyi"]
+pass_filenames = false
+stages = ["pre-commit"]
 
 [[repos]]
 repo = "https://github.com/compilerla/conventional-pre-commit"
-rev = "v4.4.0"
+rev = "v4.5.0"
 hooks = [
     { id = "conventional-pre-commit", stages = ["commit-msg"] },
 ]

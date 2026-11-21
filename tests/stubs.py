@@ -7,13 +7,13 @@ from fidem.testing import RaiseStep, YeildStep
 class GeneratorFunctionStub:
     def __init__(
         self,
-        args: tuple[Any, ...] | None = None,
+        args: tuple[object, ...] | None = None,
         steps: Sequence[YeildStep | RaiseStep] = (),
-        return_value: Any | None = None,
+        return_value: object = None,
     ) -> None:
-        self._args = args
-        self._steps = steps
-        self._return_value = return_value
+        self._args: tuple[object, ...] | None = args
+        self._steps: Sequence[YeildStep | RaiseStep] = steps
+        self._return_value: object = return_value
 
     def __call__(self, *args: Any) -> Generator[Any, Any, Any]:
         if self._args is not None:

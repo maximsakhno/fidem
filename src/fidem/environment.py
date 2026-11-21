@@ -42,8 +42,10 @@ class EnvironmentImpl(Environment):
         operation_engine: OperationEngine,
         effect_defs: Collection[EffectDef[Any]] = (),
     ) -> None:
-        self._operation_engine = operation_engine
-        self._type_to_effect_def = self._make_type_to_effect_def(effect_defs)
+        self._operation_engine: OperationEngine = operation_engine
+        self._type_to_effect_def: Mapping[type[Effect[Any]], EffectDef[Any]] = self._make_type_to_effect_def(
+            effect_defs
+        )
 
     @classmethod
     def _make_type_to_effect_def(
@@ -77,7 +79,7 @@ class EnvironmentImpl(Environment):
                 run_instruction = self._resolve_instruction(instruction)
                 try:
                     instruction_result = await run_instruction()
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - the execution plan decides how to handle the error
                     instruction = execution_plan.throw(exc)
                 else:
                     instruction = execution_plan.send(instruction_result)
