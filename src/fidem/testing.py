@@ -37,3 +37,5 @@ def assert_generator(
         generator.send(send_value)
     except StopIteration as exc:
         assert exc.value == return_value
+    else:
+        raise AssertionError("Expected generator to finish")
