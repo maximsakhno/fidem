@@ -4,7 +4,7 @@ from collections.abc import Collection, Mapping, MutableMapping, MutableSequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from random import Random
-from typing import Any, ClassVar
+from typing import Any, Final
 from uuid import uuid4
 
 from fidem.effects import DatabaseEffect, Effect, EffectContext, Effectful, EffectId, ExternalEffect, InternalEffect
@@ -87,13 +87,15 @@ class UnsupportedEffectError(Exception):
 
 
 class OperationEngineImpl(OperationEngine):
-    _HANDLED_EFFECT_TYPES: ClassVar = (InternalEffect, ExternalEffect, DatabaseEffect)
+    _HANDLED_EFFECT_TYPES: Final = (InternalEffect, ExternalEffect, DatabaseEffect)
 
     def __init__(
         self,
         command_defs: Collection[CommandDef[Any]] = (),
     ) -> None:
-        self._type_to_command_def = self._make_type_to_command_def(command_defs)
+        self._type_to_command_def: Mapping[type[Command[Any]], CommandDef[Any]] = self._make_type_to_command_def(
+            command_defs
+        )
 
     @classmethod
     def _make_type_to_command_def(
@@ -130,7 +132,7 @@ class OperationEngineImpl(OperationEngine):
             message_id = uuid4().hex
 
         # Effect ids are derived from the message id so that replaying a command reproduces them.
-        random = Random(message_id)
+        random = Random(message_id)  # noqa: S311 - determinism is required, not cryptographic strength
         context = MessageContext(message_id=message_id)
         effectful = command_def.handler(context, command)
         return (yield from self._execute_ephemeral(random, effectful))
@@ -152,7 +154,7 @@ class OperationEngineImpl(OperationEngine):
                 instruction = self._make_instruction(random, effect)
                 try:
                     effect_result = yield instruction
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - the handler decides how to handle the error
                     effect = effectful.throw(exc)
                 else:
                     effect = effectful.send(effect_result)

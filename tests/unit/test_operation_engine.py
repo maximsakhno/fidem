@@ -73,7 +73,7 @@ class TestExecuteEphemeral:
             nonlocal is_handler_closed
             try:
                 yield from TestControlEffect()
-            except Exception:
+            except Exception:  # noqa: BLE001 - checks that no error reaches the handler
                 return "swallowed"
             finally:
                 is_handler_closed = True
@@ -116,8 +116,8 @@ class TestExecuteEphemeral:
     def test_generates_different_message_ids_when_message_id_not_passed(self) -> None:
         def handler(context: MessageContext, command: TestCommand) -> Effectful[str, Effect[Any]]:
             message_ids.append(context.message_id)
+            yield from ()
             return "command_result"
-            yield
 
         message_ids: MutableSequence[str] = []
         engine = self._make_engine(handler)
@@ -174,7 +174,7 @@ class TestExecuteEphemeral:
         execution_plan.send(None)
         effect_error = ValueError("effect_error")
 
-        with pytest.raises(ValueError) as exc_info:
+        with pytest.raises(ValueError, match="effect_error") as exc_info:
             execution_plan.throw(effect_error)
 
         assert exc_info.value is effect_error
