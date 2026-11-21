@@ -1,230 +1,206 @@
-from unittest.mock import AsyncMock, Mock, call
+from collections.abc import Callable
+from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from fidem.environment import (
-    DuplicateIntentDefError,
-    EnvironmentImpl,
-    IntentNotDefinedError,
-    ReadIntentDef,
-    WriteIntentDef,
-)
-from fidem.intents import IntentCompensationContext, IntentContext, ReadIntent
+from fidem.effects import Effect, EffectContext, Effectful, InternalEffect
+from fidem.environment import DuplicateEffectDefError, EffectDef, EffectNotDefinedError, EnvironmentImpl
+from fidem.messages import MessageContext
 from fidem.operation_engine import (
-    CallIntentCompensationHandlerInstruction,
-    CallIntentHandlerInstruction,
-    CommandContextIn,
+    CallEffectHandlerInstruction,
+    ExecutionPlan,
+    Instruction,
     OperationEngine,
+    OperationEngineImpl,
+    StagedCommandDef,
 )
 from fidem.testing import YeildStep
-from tests.intents import TestReadIntent, TestWriteIntent
-from tests.operations import TestCommand
-from tests.stubs import GeneratorFunctionStub, intent_middleware_stub
+from tests.effects import TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
+from tests.messages import TestCommand
+from tests.stubs import GeneratorFunctionStub
 
 
 class TestExecute:
-    async def test_passes_context_command_into_opeation_engine(self) -> None:
-        command, context = TestCommand(), CommandContextIn()
-        operation_engine_mock = Mock(spec=OperationEngine)
-        operation_engine_mock.execute = Mock(side_effect=GeneratorFunctionStub())
+    async def test_passes_command_and_message_id_into_operation_engine(self) -> None:
+        command = TestCommand()
+        message_id = "test_message_id"
+        operation_engine_mock = self._make_operation_engine_mock(GeneratorFunctionStub())
         environment = EnvironmentImpl(operation_engine=operation_engine_mock)
 
-        await environment.execute(command, context)
+        await environment.execute(command, message_id)
 
-        operation_engine_mock.execute.assert_called_once_with(command, context)
+        operation_engine_mock.execute.assert_called_once_with(command, message_id)
 
     async def test_returns_execution_plan_result(self) -> None:
-        command, context = TestCommand(), CommandContextIn()
         execution_plan_result = "execution_plan_result"
-        operation_engine_mock = Mock(spec=OperationEngine)
-        operation_engine_mock.execute = Mock(side_effect=GeneratorFunctionStub(return_value=execution_plan_result))
+        operation_engine_mock = self._make_operation_engine_mock(
+            GeneratorFunctionStub(return_value=execution_plan_result)
+        )
         environment = EnvironmentImpl(operation_engine=operation_engine_mock)
 
-        result = await environment.execute(command, context)
+        result = await environment.execute(TestCommand())
 
         assert result == execution_plan_result
 
-    async def test_calls_intent_handler_when_call_intent_handler_instruction_yields(self) -> None:
-        command, command_context = TestCommand(), CommandContextIn()
-        intent_context = IntentContext(intent_id="test_intent_id")
-        intent = TestReadIntent()
-        intent_result = "intent_result"
-        intent_handler_mock = AsyncMock(return_value=intent_result)
-        operation_engine_mock = Mock(spec=OperationEngine)
-        operation_engine_mock.execute = Mock(
-            side_effect=GeneratorFunctionStub(
-                steps=[YeildStep(CallIntentHandlerInstruction(intent_context, intent), intent_result)]
-            )
+    async def test_calls_effect_handler_and_sends_its_result_into_execution_plan(self) -> None:
+        instruction = self._make_instruction()
+        effect_result = "effect_result"
+        effect_handler_mock = AsyncMock(return_value=effect_result)
+        operation_engine_mock = self._make_operation_engine_mock(
+            GeneratorFunctionStub(steps=[YeildStep(instruction, effect_result)])
         )
         environment = EnvironmentImpl(
             operation_engine=operation_engine_mock,
-            intent_defs=[ReadIntentDef(TestReadIntent, intent_handler_mock)],
+            effect_defs=[EffectDef(TestInternalEffect, effect_handler_mock)],
         )
 
-        await environment.execute(command, command_context)
+        await environment.execute(TestCommand())
 
-        intent_handler_mock.assert_awaited_once_with(intent_context, intent)
+        effect_handler_mock.assert_awaited_once_with(instruction.context, instruction.effect)
 
-    async def test_raises_intent_not_defined_error_when_intent_not_defined(self) -> None:
-        command, command_context = TestCommand(), CommandContextIn()
-        intent_context = IntentContext(intent_id="test_intent_id")
-        intent = TestReadIntent()
-        intent_result = "intent_result"
-        operation_engine_mock = Mock(spec=OperationEngine)
-        operation_engine_mock.execute = Mock(
-            side_effect=GeneratorFunctionStub(
-                steps=[YeildStep(CallIntentHandlerInstruction(intent_context, intent), intent_result)]
-            )
+    async def test_throws_effect_handler_error_into_execution_plan(self) -> None:
+        def execution_plan(command: TestCommand, message_id: str | None) -> ExecutionPlan[str]:
+            try:
+                yield self._make_instruction()
+            except ValueError as exc:
+                return str(exc)
+            return "unreachable"
+
+        operation_engine_mock = self._make_operation_engine_mock(execution_plan)
+        environment = EnvironmentImpl(
+            operation_engine=operation_engine_mock,
+            effect_defs=[EffectDef(TestInternalEffect, AsyncMock(side_effect=ValueError("effect_error")))],
+        )
+
+        result = await environment.execute(TestCommand())
+
+        assert result == "effect_error"
+
+    async def test_raises_effect_handler_error_when_execution_plan_does_not_handle_it(self) -> None:
+        effect_error = ValueError("effect_error")
+        operation_engine_mock = self._make_operation_engine_mock(
+            GeneratorFunctionStub(steps=[YeildStep(self._make_instruction(), None)])
+        )
+        environment = EnvironmentImpl(
+            operation_engine=operation_engine_mock,
+            effect_defs=[EffectDef(TestInternalEffect, AsyncMock(side_effect=effect_error))],
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            await environment.execute(TestCommand())
+
+        assert exc_info.value is effect_error
+
+    async def test_does_not_throw_effect_not_defined_error_into_execution_plan(self) -> None:
+        def execution_plan(command: TestCommand, message_id: str | None) -> ExecutionPlan[str]:
+            nonlocal is_execution_plan_closed
+            try:
+                yield self._make_instruction()
+            except Exception:
+                return "swallowed"
+            finally:
+                is_execution_plan_closed = True
+            return "unreachable"
+
+        is_execution_plan_closed = False
+        environment = EnvironmentImpl(operation_engine=self._make_operation_engine_mock(execution_plan))
+
+        with pytest.raises(EffectNotDefinedError):
+            await environment.execute(TestCommand())
+
+        assert is_execution_plan_closed
+
+    async def test_raises_effect_not_defined_error_when_effect_not_defined(self) -> None:
+        operation_engine_mock = self._make_operation_engine_mock(
+            GeneratorFunctionStub(steps=[YeildStep(self._make_instruction(), None)])
         )
         environment = EnvironmentImpl(operation_engine=operation_engine_mock)
 
-        with pytest.raises(IntentNotDefinedError) as exc_info:
-            await environment.execute(command, command_context)
+        with pytest.raises(EffectNotDefinedError) as exc_info:
+            await environment.execute(TestCommand())
 
-        assert exc_info.value.args == (TestReadIntent,)
+        assert exc_info.value.args == (TestInternalEffect,)
 
-    async def test_calls_intent_compensation_handler_when_compensation_instruction_yeilds(self) -> None:
-        command, command_context = TestCommand(), CommandContextIn()
-        intent_context = IntentContext(intent_id="test_intent_id")
-        intent = TestWriteIntent()
-        intent_result = "intent_result"
-        intent_compensation_context = IntentCompensationContext(
-            intent_id="compensation_intent_id",
-            original_context=intent_context,
-            original_result=intent_result,
-        )
-        intent_handler_mock = AsyncMock(return_value=intent_result)
-        intent_compensation_handler_mock = AsyncMock(return_value=None)
-        operation_engine_mock = Mock(spec=OperationEngine)
-        operation_engine_mock.execute = Mock(
-            side_effect=GeneratorFunctionStub(
-                steps=[YeildStep(CallIntentCompensationHandlerInstruction(intent_compensation_context, intent), None)]
-            )
-        )
-        environment = EnvironmentImpl(
-            operation_engine=operation_engine_mock,
-            intent_defs=[WriteIntentDef(TestWriteIntent, intent_handler_mock, intent_compensation_handler_mock)],
-        )
-
-        await environment.execute(command, command_context)
-
-        intent_handler_mock.assert_not_awaited()
-        intent_compensation_handler_mock.assert_awaited_once_with(intent_compensation_context, intent)
-
-
-class TestIntentDefinition:
-    def test_raises_duplicate_intent_def_error_when_defines_intents_with_same_type(self) -> None:
-        class OtherReadIntent(ReadIntent[str]):
+    async def test_raises_not_implemented_error_when_instruction_not_supported(self) -> None:
+        class UnknownInstruction(Instruction[None]):
             pass
 
-        duplicate_intent_defs = [
-            ReadIntentDef(TestReadIntent, AsyncMock()),
-            ReadIntentDef(TestReadIntent, AsyncMock()),
+        operation_engine_mock = self._make_operation_engine_mock(
+            GeneratorFunctionStub(steps=[YeildStep(UnknownInstruction(), None)])
+        )
+        environment = EnvironmentImpl(operation_engine=operation_engine_mock)
+
+        with pytest.raises(NotImplementedError):
+            await environment.execute(TestCommand())
+
+    def _make_operation_engine_mock(self, execution_plan: Callable[..., ExecutionPlan[Any]]) -> Mock:
+        operation_engine_mock = Mock(spec=OperationEngine)
+        operation_engine_mock.execute.side_effect = execution_plan
+        return operation_engine_mock
+
+    def _make_instruction(self) -> CallEffectHandlerInstruction[str]:
+        return CallEffectHandlerInstruction(EffectContext(effect_id="test_effect_id"), TestInternalEffect())
+
+
+class TestExecuteWithOperationEngine:
+    async def test_executes_command_with_effects(self) -> None:
+        def handler(context: MessageContext, command: TestCommand) -> Effectful[str, Effect[Any]]:
+            internal_result = yield from TestInternalEffect()
+            external_result = yield from TestExternalReadEffect()
+            database_result = yield from TestDatabaseWriteEffect()
+            return f"{internal_result}, {external_result}, {database_result}"
+
+        environment = EnvironmentImpl(
+            operation_engine=OperationEngineImpl(command_defs=[StagedCommandDef("test", TestCommand, handler)]),
+            effect_defs=[
+                EffectDef(TestInternalEffect, AsyncMock(return_value="internal")),
+                EffectDef(TestExternalReadEffect, AsyncMock(return_value="external")),
+                EffectDef(TestDatabaseWriteEffect, AsyncMock(return_value="database")),
+            ],
+        )
+
+        result = await environment.execute(TestCommand())
+
+        assert result == "internal, external, database"
+
+    async def test_passes_same_effect_ids_when_command_replayed_with_same_message_id(self) -> None:
+        def handler(context: MessageContext, command: TestCommand) -> Effectful[str, Effect[Any]]:
+            yield from TestInternalEffect()
+            yield from TestInternalEffect()
+            return "command_result"
+
+        effect_handler_mock = AsyncMock(return_value="effect_result")
+        environment = EnvironmentImpl(
+            operation_engine=OperationEngineImpl(command_defs=[StagedCommandDef("test", TestCommand, handler)]),
+            effect_defs=[EffectDef(TestInternalEffect, effect_handler_mock)],
+        )
+
+        await environment.execute(TestCommand(), "test_message_id")
+        await environment.execute(TestCommand(), "test_message_id")
+
+        effect_ids = [call.args[0].effect_id for call in effect_handler_mock.await_args_list]
+        assert effect_ids[:2] == effect_ids[2:]
+        assert len(set(effect_ids)) == 2
+
+
+class TestEffectDefinition:
+    def test_raises_duplicate_effect_def_error_when_defines_effects_with_same_type(self) -> None:
+        class OtherEffect(InternalEffect[str]):
+            pass
+
+        duplicate_effect_defs = [
+            EffectDef(TestInternalEffect, AsyncMock()),
+            EffectDef(TestInternalEffect, AsyncMock()),
         ]
-        other_intent_defs = [
-            ReadIntentDef(OtherReadIntent, AsyncMock()),
+        other_effect_defs = [
+            EffectDef(OtherEffect, AsyncMock()),
         ]
-        with pytest.raises(DuplicateIntentDefError) as exc_info:
+
+        with pytest.raises(DuplicateEffectDefError) as exc_info:
             EnvironmentImpl(
                 operation_engine=Mock(spec=OperationEngine),
-                intent_defs=duplicate_intent_defs + other_intent_defs,
+                effect_defs=duplicate_effect_defs + other_effect_defs,
             )
 
-        assert exc_info.value.args == (duplicate_intent_defs,)
-
-
-class TestIntentMiddleware:
-    async def test_global_middlewares_calls_in_reverse_order(self) -> None:
-        middlewares = Mock()
-        middlewares.first = self._make_middleware_mock()
-        middlewares.second = self._make_middleware_mock()
-        middlewares.third = self._make_middleware_mock()
-        intent_context = IntentContext(intent_id="test_intent_id")
-        intent = TestReadIntent()
-        intent_result = "intent_result"
-        intent_handler_mock = AsyncMock(return_value=intent_result)
-        operation_engine_mock = Mock(spec=OperationEngine)
-        operation_engine_mock.execute = Mock(
-            side_effect=GeneratorFunctionStub(
-                steps=[YeildStep(CallIntentHandlerInstruction(intent_context, intent), intent_result)]
-            )
-        )
-
-        EnvironmentImpl(
-            operation_engine=operation_engine_mock,
-            intent_defs=[ReadIntentDef(TestReadIntent, intent_handler_mock)],
-            middlewares=[middlewares.first, middlewares.second, middlewares.third],
-        )
-
-        expected_calls = [
-            call.third(intent_handler_mock),
-            call.second(intent_handler_mock),
-            call.first(intent_handler_mock),
-        ]
-        middlewares.assert_has_calls(expected_calls, any_order=False)
-
-    async def test_local_middlewares_calls_in_reverse_order(self) -> None:
-        middlewares = Mock()
-        middlewares.first = self._make_middleware_mock()
-        middlewares.second = self._make_middleware_mock()
-        middlewares.third = self._make_middleware_mock()
-        intent_context = IntentContext(intent_id="test_intent_id")
-        intent = TestReadIntent()
-        intent_result = "intent_result"
-        intent_handler_mock = AsyncMock(return_value=intent_result)
-        operation_engine_mock = Mock(spec=OperationEngine)
-        operation_engine_mock.execute = Mock(
-            side_effect=GeneratorFunctionStub(
-                steps=[YeildStep(CallIntentHandlerInstruction(intent_context, intent), intent_result)]
-            )
-        )
-
-        EnvironmentImpl(
-            operation_engine=operation_engine_mock,
-            intent_defs=[
-                ReadIntentDef(
-                    TestReadIntent,
-                    intent_handler_mock,
-                    middlewares=[middlewares.first, middlewares.second, middlewares.third],
-                )
-            ],
-        )
-
-        expected_calls = [
-            call.third(intent_handler_mock),
-            call.second(intent_handler_mock),
-            call.first(intent_handler_mock),
-        ]
-        middlewares.assert_has_calls(expected_calls, any_order=False)
-
-    async def test_local_middlewares_overrides_global_middlewares(self) -> None:
-        global_middleware = self._make_middleware_mock()
-        local_middleware = self._make_middleware_mock()
-        intent_context = IntentContext(intent_id="test_intent_id")
-        intent = TestReadIntent()
-        intent_result = "intent_result"
-        intent_handler_mock = AsyncMock(return_value=intent_result)
-        operation_engine_mock = Mock(spec=OperationEngine)
-        operation_engine_mock.execute = Mock(
-            side_effect=GeneratorFunctionStub(
-                steps=[YeildStep(CallIntentHandlerInstruction(intent_context, intent), intent_result)]
-            )
-        )
-
-        EnvironmentImpl(
-            operation_engine=operation_engine_mock,
-            intent_defs=[
-                ReadIntentDef(
-                    TestReadIntent,
-                    intent_handler_mock,
-                    middlewares=[local_middleware],
-                )
-            ],
-            middlewares=[global_middleware],
-        )
-
-        global_middleware.assert_not_called()
-        local_middleware.assert_called_once_with(intent_handler_mock)
-
-    def _make_middleware_mock(self) -> Mock:
-        return Mock(side_effect=intent_middleware_stub)
+        assert exc_info.value.args == (duplicate_effect_defs,)

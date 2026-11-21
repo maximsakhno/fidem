@@ -1,10 +1,11 @@
 import asyncio
 from dataclasses import dataclass
+from typing import Any
 
-from fidem.environment import EnvironmentImpl, ReadIntentDef, WriteIntentDef
-from fidem.intents import IntentCompensationContext, IntentContext, ReadIntent, WriteIntent, ask
-from fidem.operation_engine import CommandContextIn, CommandDef, OperationEngineImpl
-from fidem.operations import Command, CommandContext, CommandGenerator
+from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, EffectContext, Effectful
+from fidem.environment import EffectDef, EnvironmentImpl
+from fidem.messages import Command, MessageContext
+from fidem.operation_engine import OperationEngineImpl, StagedCommandDef
 
 
 # ── Domain types ──────────────────────────────────────────
@@ -39,25 +40,25 @@ class Reservation:
     quantity: int
 
 
-# ── Intents ───────────────────────────────────────────────
+# ── Effects ───────────────────────────────────────────────
 @dataclass(frozen=True, slots=True)
-class GetUserIntent(ReadIntent[User]):
+class GetUserEffect(DatabaseReadEffect[User]):
     user_id: str
 
 
 @dataclass(frozen=True, slots=True)
-class CheckStockIntent(ReadIntent[Product]):
+class CheckStockEffect(DatabaseReadEffect[Product]):
     product_id: str
 
 
 @dataclass(frozen=True, slots=True)
-class ReserveStockIntent(WriteIntent[Reservation]):
+class ReserveStockEffect(DatabaseWriteEffect[Reservation]):
     product_id: str
     quantity: int
 
 
 @dataclass(frozen=True, slots=True)
-class CreateOrderIntent(WriteIntent[Order]):
+class CreateOrderEffect(DatabaseWriteEffect[Order]):
     user_id: str
     product_id: str
     quantity: int
@@ -65,54 +66,41 @@ class CreateOrderIntent(WriteIntent[Order]):
 
 
 @dataclass(frozen=True, slots=True)
-class DebitUserIntent(WriteIntent[User]):
+class DebitUserEffect(DatabaseWriteEffect[User]):
     user_id: str
     amount: float
 
 
-# ── Dummy intent handlers ─────────────────────────────────
-async def handle_get_user(ctx: IntentContext, intent: GetUserIntent) -> User:
-    print(f"[DB] Fetching user {intent.user_id}")
-    return User(id=intent.user_id, name="Alice", balance=150.0)
+# ── Dummy effect handlers ─────────────────────────────────
+async def handle_get_user(ctx: EffectContext, effect: GetUserEffect) -> User:
+    print(f"[DB] {ctx.effect_id}: fetching user {effect.user_id}")
+    return User(id=effect.user_id, name="Alice", balance=150.0)
 
 
-async def handle_check_stock(ctx: IntentContext, intent: CheckStockIntent) -> Product:
-    print(f"[DB] Checking stock for product {intent.product_id}")
-    return Product(id=intent.product_id, name="Awesome Gadget", stock=10, price=49.99)
+async def handle_check_stock(ctx: EffectContext, effect: CheckStockEffect) -> Product:
+    print(f"[DB] {ctx.effect_id}: checking stock for product {effect.product_id}")
+    return Product(id=effect.product_id, name="Awesome Gadget", stock=10, price=49.99)
 
 
-async def handle_reserve_stock(ctx: IntentContext, intent: ReserveStockIntent) -> Reservation:
-    print(f"[DB] Reserving {intent.quantity} units of {intent.product_id} …")
-    return Reservation(reservation_id="res-001", product_id=intent.product_id, quantity=intent.quantity)
+async def handle_reserve_stock(ctx: EffectContext, effect: ReserveStockEffect) -> Reservation:
+    print(f"[DB] {ctx.effect_id}: reserving {effect.quantity} units of {effect.product_id}")
+    return Reservation(reservation_id="res-001", product_id=effect.product_id, quantity=effect.quantity)
 
 
-async def handle_create_order(ctx: IntentContext, intent: CreateOrderIntent) -> Order:
-    print(f"[DB] Inserting order for user {intent.user_id} …")
+async def handle_create_order(ctx: EffectContext, effect: CreateOrderEffect) -> Order:
+    print(f"[DB] {ctx.effect_id}: inserting order for user {effect.user_id}")
     return Order(
         id="order-123",
-        user_id=intent.user_id,
-        product_id=intent.product_id,
-        quantity=intent.quantity,
-        total=intent.total,
+        user_id=effect.user_id,
+        product_id=effect.product_id,
+        quantity=effect.quantity,
+        total=effect.total,
     )
 
 
-async def handle_debit_user(ctx: IntentContext, intent: DebitUserIntent) -> User:
-    print(f"[DB] Debiting {intent.amount} from user {intent.user_id} …")
-    return User(id=intent.user_id, name="Alice", balance=150.0 - intent.amount)
-
-
-# ── Compensation handlers ─────────────────────────────────
-async def compensate_reserve_stock(ctx: IntentCompensationContext[Reservation], intent: ReserveStockIntent) -> None:
-    print(f"[DB] COMPENSATING: releasing reservation {ctx.original_result.reservation_id} …")
-
-
-async def compensate_create_order(ctx: IntentCompensationContext[Order], intent: CreateOrderIntent) -> None:
-    print(f"[DB] COMPENSATING: deleting order {ctx.original_result.id} and restoring stock …")
-
-
-async def compensate_debit_user(ctx: IntentCompensationContext[User], intent: DebitUserIntent) -> None:
-    print(f"[DB] COMPENSATING: refunding {intent.amount} to user {intent.user_id} …")
+async def handle_debit_user(ctx: EffectContext, effect: DebitUserEffect) -> User:
+    print(f"[DB] {ctx.effect_id}: debiting {effect.amount} from user {effect.user_id}")
+    return User(id=effect.user_id, name="Alice", balance=150.0 - effect.amount)
 
 
 # ── Command ───────────────────────────────────────────────
@@ -123,27 +111,25 @@ class PlaceOrderCommand(Command[Order]):
     quantity: int
 
 
-def place_order_handler(ctx: CommandContext, cmd: PlaceOrderCommand) -> CommandGenerator[Order]:
-    # 1. Read data
-    user = yield from ask(GetUserIntent(cmd.user_id))
-    product = yield from ask(CheckStockIntent(cmd.product_id))
+def place_order_handler(ctx: MessageContext, cmd: PlaceOrderCommand) -> Effectful[Order, Effect[Any]]:
+    user = yield from GetUserEffect(cmd.user_id)
+    product = yield from CheckStockEffect(cmd.product_id)
 
     if product.stock < cmd.quantity:
         raise RuntimeError(f"Insufficient stock (available {product.stock}, requested {cmd.quantity})")
 
     total = product.price * cmd.quantity
-
-    # 2. Reserve stock (Write)
-    yield from ask(ReserveStockIntent(cmd.product_id, cmd.quantity))
-
-    # 3. Create order (Write)
-    order = yield from ask(CreateOrderIntent(cmd.user_id, cmd.product_id, cmd.quantity, total))
-
-    # 4. Debit user (Write)
     if user.balance < total:
         raise RuntimeError(f"Insufficient balance (balance {user.balance}, needed {total})")
-    yield from ask(DebitUserIntent(cmd.user_id, total))
 
+    yield from ReserveStockEffect(cmd.product_id, cmd.quantity)
+    order = yield from CreateOrderEffect(
+        user_id=cmd.user_id,
+        product_id=cmd.product_id,
+        quantity=cmd.quantity,
+        total=total,
+    )
+    yield from DebitUserEffect(cmd.user_id, total)
     return order
 
 
@@ -151,40 +137,31 @@ async def main() -> None:
     env = EnvironmentImpl(
         operation_engine=OperationEngineImpl(
             command_defs=[
-                CommandDef(PlaceOrderCommand, place_order_handler),
+                StagedCommandDef("place_order", PlaceOrderCommand, place_order_handler),
             ],
         ),
-        intent_defs=[
-            ReadIntentDef(GetUserIntent, handle_get_user),
-            ReadIntentDef(CheckStockIntent, handle_check_stock),
-            WriteIntentDef(ReserveStockIntent, handle_reserve_stock, compensate_reserve_stock),
-            WriteIntentDef(CreateOrderIntent, handle_create_order, compensate_create_order),
-            WriteIntentDef(DebitUserIntent, handle_debit_user, compensate_debit_user),
+        effect_defs=[
+            EffectDef(GetUserEffect, handle_get_user),
+            EffectDef(CheckStockEffect, handle_check_stock),
+            EffectDef(ReserveStockEffect, handle_reserve_stock),
+            EffectDef(CreateOrderEffect, handle_create_order),
+            EffectDef(DebitUserEffect, handle_debit_user),
         ],
     )
 
     print("=== Successful order placement ===")
+    result = await env.execute(PlaceOrderCommand(user_id="u1", product_id="p1", quantity=2), "order-ok")
+    print(f"Result: {result}")
+
+    # Effect ids repeat on replay, but ephemeral mode runs every effect again, so real handlers must be idempotent by effect_id.
+    print("\n=== Replay with the same message id ===")
+    await env.execute(PlaceOrderCommand(user_id="u1", product_id="p1", quantity=2), "order-ok")
+
+    print("\n=== Order with insufficient balance ===")
     try:
-        result = await env.execute(
-            PlaceOrderCommand(user_id="u1", product_id="p1", quantity=2),
-            CommandContextIn(operation_id="order-ok"),
-        )
-        print(f"Result: {result}")
+        await env.execute(PlaceOrderCommand(user_id="u1", product_id="p1", quantity=10))
     except RuntimeError as e:
         print(f"Error: {e}")
-
-    print("\n=== Order with insufficient balance (rollback) ===")
-    try:
-        # 10 units * 49.99 = 499.90, balance 150 → error
-        await env.execute(
-            PlaceOrderCommand(user_id="u1", product_id="p1", quantity=10),
-            CommandContextIn(operation_id="order-fail-balance"),
-        )
-    except RuntimeError as e:
-        print(f"Error: {e}")
-        print("Engine should have rolled back the transaction, compensating all successful write intents.")
-
-    print("\nFinished!")
 
 
 if __name__ == "__main__":
