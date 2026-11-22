@@ -5,10 +5,16 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from functools import partial
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, NamedTuple, Self
 from uuid import uuid4
 
-from fidem.di import Dependency, DependencyContainer, PreparedEffectHandler, Scope
+from fidem.di.core import Scope
+from fidem.di.effects import (
+    ClosableScope,
+    EffectDependencyContainer,
+    EffectDependencyDef,
+    PreparedEffectHandler,
+)
 from fidem.effects import Effect
 from fidem.messages import Command, MessageContext, MessageId
 from fidem.operation_engine import CallEffectHandlerInstruction, ExecutionPlan, Instruction, OperationEngine
@@ -48,24 +54,29 @@ class EnvironmentAlreadyStartedError(Exception):
     pass
 
 
+class _ApplicationScopes(NamedTuple):
+    effects: ClosableScope
+    messages: Scope
+
+
 class EnvironmentImpl(Environment):
     def __init__(
         self,
         operation_engine: OperationEngine,
         effect_defs: Collection[EffectDef[Any]] = (),
-        dependencies: Collection[Dependency[Any]] = (),
+        dependency_defs: Collection[EffectDependencyDef[Any]] = (),
     ) -> None:
         self._operation_engine: OperationEngine = operation_engine
         type_to_effect_def = self._make_type_to_effect_def(effect_defs)
-        self._dependency_container: DependencyContainer = DependencyContainer(
-            dependencies=dependencies,
+        self._dependency_container: EffectDependencyContainer = EffectDependencyContainer(
+            dependency_defs=dependency_defs,
             effect_types=tuple(type_to_effect_def),
         )
         self._type_to_effect_handler: Mapping[type[Effect[Any]], PreparedEffectHandler] = {
             effect_type: self._dependency_container.prepare_effect_handler(effect_type, effect_def.handler)
             for effect_type, effect_def in type_to_effect_def.items()
         }
-        self._application_scope: Scope | None = None
+        self._application_scopes: _ApplicationScopes | None = None
 
     @classmethod
     def _make_type_to_effect_def(
@@ -85,9 +96,20 @@ class EnvironmentImpl(Environment):
         return type_to_effect_def
 
     async def __aenter__(self) -> Self:
-        if self._application_scope is not None:
+        if self._application_scopes is not None:
             raise EnvironmentAlreadyStartedError
-        self._application_scope = await self._dependency_container.start()
+        effects_scope = await self._dependency_container.start()
+        try:
+            # Application dependencies of messages are resolved outside any message.
+            messages_scope = await self._run_execution_plan(
+                execution_plan=self._operation_engine.start(),
+                application_scope=effects_scope,
+                message_scope=None,
+            )
+        except BaseException as exc:
+            await self._dependency_container.stop(effects_scope, exc)
+            raise
+        self._application_scopes = _ApplicationScopes(effects=effects_scope, messages=messages_scope)
         return self
 
     async def __aexit__(
@@ -96,33 +118,37 @@ class EnvironmentImpl(Environment):
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        application_scope = self._get_application_scope()
-        self._application_scope = None
-        await self._dependency_container.stop(application_scope, exc)
+        application_scopes = self._get_application_scopes()
+        self._application_scopes = None
+        await self._dependency_container.stop(application_scopes.effects, exc)
 
-    def _get_application_scope(self) -> Scope:
-        if self._application_scope is None:
+    def _get_application_scopes(self) -> _ApplicationScopes:
+        if self._application_scopes is None:
             raise EnvironmentNotStartedError
-        return self._application_scope
+        return self._application_scopes
 
     async def execute[ResultT](
         self,
         command: Command[ResultT],
         message_id: MessageId | None = None,
     ) -> ResultT:
-        application_scope = self._get_application_scope()
+        application_scopes = self._get_application_scopes()
         if message_id is None:
             message_id = uuid4().hex
         message_context = MessageContext(message_id=message_id)
-        execution_plan = self._operation_engine.execute(command, message_id)
+        execution_plan = self._operation_engine.execute(
+            command=command,
+            message_id=message_id,
+            application_scope=application_scopes.messages,
+        )
         async with self._dependency_container.make_message_scope(command, message_context) as message_scope:
-            return await self._run_execution_plan(execution_plan, application_scope, message_scope)
+            return await self._run_execution_plan(execution_plan, application_scopes.effects, message_scope)
 
     async def _run_execution_plan[ResultT](
         self,
         execution_plan: ExecutionPlan[ResultT],
-        application_scope: Scope,
-        message_scope: Scope,
+        application_scope: ClosableScope,
+        message_scope: ClosableScope | None,
     ) -> ResultT:
         try:
             instruction = execution_plan.send(None)
@@ -142,8 +168,8 @@ class EnvironmentImpl(Environment):
     def _resolve_instruction(
         self,
         instruction: Instruction[Any],
-        application_scope: Scope,
-        message_scope: Scope,
+        application_scope: ClosableScope,
+        message_scope: ClosableScope | None,
     ) -> Callable[[], Awaitable[object]]:
         if isinstance(instruction, CallEffectHandlerInstruction):
             effect_handler = self._get_effect_handler(type(instruction.effect))
@@ -166,8 +192,8 @@ class EnvironmentImpl(Environment):
         self,
         effect_handler: PreparedEffectHandler,
         instruction: CallEffectHandlerInstruction[Any],
-        application_scope: Scope,
-        message_scope: Scope,
+        application_scope: ClosableScope,
+        message_scope: ClosableScope | None,
     ) -> object:
         effect_scope = self._dependency_container.make_effect_scope(instruction.effect, instruction.context)
         async with effect_scope:
