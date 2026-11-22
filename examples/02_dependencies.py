@@ -4,12 +4,12 @@ from collections.abc import AsyncGenerator, MutableMapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from fidem.di import (
-    AsyncFunctionDependencyResolver,
-    AsyncGeneratorFunctionDependencyResolver,
-    Dependency,
-    DependencyLifetime,
-    InstanceDependencyResolver,
+from fidem.di.effects import (
+    AsyncFunctionEffectDependencyResolver,
+    AsyncGeneratorFunctionEffectDependencyResolver,
+    EffectDependencyDef,
+    EffectDependencyLifetime,
+    InstanceEffectDependencyResolver,
 )
 from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, EffectContext, Effectful
 from fidem.environment import EffectDef, EnvironmentImpl
@@ -153,12 +153,18 @@ async def main() -> None:
             EffectDef(GetUserEffect, handle_get_user),
             EffectDef(SaveUserEffect, handle_save_user),
         ],
-        dependencies=[
-            Dependency(InstanceDependencyResolver(Settings(database_url="db://primary", replica_url="db://replica"))),
-            Dependency(AsyncGeneratorFunctionDependencyResolver(primary), name="primary"),
-            Dependency(AsyncGeneratorFunctionDependencyResolver(replica), name="replica"),
-            Dependency(AsyncGeneratorFunctionDependencyResolver(transaction), lifetime=DependencyLifetime.MESSAGE),
-            Dependency(AsyncFunctionDependencyResolver(effect_log), lifetime=DependencyLifetime.EFFECT),
+        dependency_defs=[
+            EffectDependencyDef(
+                InstanceEffectDependencyResolver(Settings(database_url="db://primary", replica_url="db://replica"))
+            ),
+            EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(primary), name="primary"),
+            EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(replica), name="replica"),
+            EffectDependencyDef(
+                AsyncGeneratorFunctionEffectDependencyResolver(transaction), lifetime=EffectDependencyLifetime.MESSAGE
+            ),
+            EffectDependencyDef(
+                AsyncFunctionEffectDependencyResolver(effect_log), lifetime=EffectDependencyLifetime.EFFECT
+            ),
         ],
     )
 

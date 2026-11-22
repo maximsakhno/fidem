@@ -142,8 +142,8 @@ ignore = [
 "tests/**" = ["S101", "S105", "S106", "S311", "ARG"]
 # Assertion helpers for library users' tests.
 "src/fidem/testing.py" = ["S101", "PT017"]
-# Examples print results and implement handlers with a fixed signature.
-"examples/**" = ["T201", "ARG"]
+# Examples print results, implement handlers with a fixed signature and use fake secrets.
+"examples/**" = ["T201", "ARG", "S105", "S106"]
 
 [tool.ruff.lint.flake8-unused-arguments]
 # Callbacks and wrappers accept *args/**kwargs they do not use.
