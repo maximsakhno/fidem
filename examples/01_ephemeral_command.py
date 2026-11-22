@@ -149,19 +149,20 @@ async def main() -> None:
         ],
     )
 
-    print("=== Successful order placement ===")
-    result = await env.execute(PlaceOrderCommand(user_id="u1", product_id="p1", quantity=2), "order-ok")
-    print(f"Result: {result}")
+    async with env:
+        print("=== Successful order placement ===")
+        result = await env.execute(PlaceOrderCommand(user_id="u1", product_id="p1", quantity=2), "order-ok")
+        print(f"Result: {result}")
 
-    # Effect ids repeat on replay, but ephemeral mode runs every effect again, so real handlers must be idempotent by effect_id.
-    print("\n=== Replay with the same message id ===")
-    await env.execute(PlaceOrderCommand(user_id="u1", product_id="p1", quantity=2), "order-ok")
+        # Effect ids repeat on replay, but ephemeral mode runs every effect again, so real handlers must be idempotent by effect_id.
+        print("\n=== Replay with the same message id ===")
+        await env.execute(PlaceOrderCommand(user_id="u1", product_id="p1", quantity=2), "order-ok")
 
-    print("\n=== Order with insufficient balance ===")
-    try:
-        await env.execute(PlaceOrderCommand(user_id="u1", product_id="p1", quantity=10))
-    except RuntimeError as e:
-        print(f"Error: {e}")
+        print("\n=== Order with insufficient balance ===")
+        try:
+            await env.execute(PlaceOrderCommand(user_id="u1", product_id="p1", quantity=10))
+        except RuntimeError as e:
+            print(f"Error: {e}")
 
 
 if __name__ == "__main__":
