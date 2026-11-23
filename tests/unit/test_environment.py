@@ -2,21 +2,17 @@ from asyncio import Barrier, Event, gather, sleep, timeout
 from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, MutableSequence, Sequence
 from dataclasses import dataclass
 from typing import Any
-from unittest.mock import ANY, Mock
+from unittest.mock import Mock
 
 import pytest
 
-from fidem.di.core import DependencyNotFoundError, Scope, UnsupportedFunctionError
+from fidem.di.core import DependencyNotFoundError, UnsupportedFunctionError
 from fidem.di.effects import (
     AsyncFunctionEffectDependencyResolver,
     AsyncGeneratorFunctionEffectDependencyResolver,
     EffectDependencyDef,
     EffectDependencyLifetime,
     ScopeClosedError,
-)
-from fidem.di.messages import (
-    DependencyEffect,
-    FunctionMessageDependencyResolver,
 )
 from fidem.effects import Effect, EffectContext, Effectful, InternalEffect
 from fidem.environment import (
@@ -30,6 +26,7 @@ from fidem.environment import (
     EnvironmentImpl,
     EnvironmentNotStartedError,
 )
+from fidem.guards import GuardDef, GuardEffect
 from fidem.messages import Command, MessageContext
 from fidem.operation_engine import (
     CallEffectHandlerInstruction,
@@ -43,7 +40,7 @@ from fidem.operation_engine import (
 from fidem.testing import YeildStep
 from tests.effects import TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
 from tests.messages import TestCommand
-from tests.stubs import GeneratorFunctionStub, make_application_dependency_def, make_message_dependency_def
+from tests.stubs import GeneratorFunctionStub
 
 
 class Resource:
@@ -80,7 +77,6 @@ class TestExecute:
         operation_engine_mock.execute.assert_called_once_with(
             command=command,
             message_context=MessageContext(message_id="test_message_id"),
-            application_scope=ANY,
         )
 
     async def test_passes_same_message_context_into_operation_engine_and_effect_handler(self) -> None:
@@ -145,9 +141,7 @@ class TestExecute:
         assert calls == [EffectHandlerCall(context=instruction.effect_context, effect=instruction.effect)]
 
     async def test_throws_effect_handler_error_into_execution_plan(self) -> None:
-        def execution_plan(
-            command: TestCommand, application_scope: Scope, message_context: MessageContext
-        ) -> ExecutionPlan[str]:
+        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
             try:
                 yield make_instruction()
             except ValueError as exc:
@@ -180,9 +174,7 @@ class TestExecute:
         assert exc_info.value is effect_error
 
     async def test_does_not_throw_effect_not_defined_error_into_execution_plan(self) -> None:
-        def execution_plan(
-            command: TestCommand, application_scope: Scope, message_context: MessageContext
-        ) -> ExecutionPlan[str]:
+        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
             nonlocal is_execution_plan_closed
             try:
                 yield make_instruction()
@@ -439,9 +431,7 @@ class TestEffectHandlerDependencies:
         async def handler(resource: Resource) -> None:
             pass
 
-        def execution_plan(
-            command: TestCommand, application_scope: Scope, message_context: MessageContext
-        ) -> ExecutionPlan[str]:
+        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
             yield make_instruction()
             raise message_error
 
@@ -527,9 +517,7 @@ class TestEffectHandlerDependencies:
         async def handler(resource: Resource) -> str:
             return "effect_result"
 
-        def execution_plan(
-            command: TestCommand, application_scope: Scope, message_context: MessageContext
-        ) -> ExecutionPlan[str]:
+        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
             try:
                 yield make_instruction()
             except ValueError as exc:
@@ -648,33 +636,9 @@ class TestEffectHandlerDependencies:
         )
 
 
-class TestMessageDependencies:
-    async def test_resolves_application_message_dependencies_once_on_start(self) -> None:
-        def config() -> Config:
-            events.append("factory")
-            return Config("config_value")
-
-        def handler(config: Config) -> Effectful[str, Effect[Any]]:
-            yield from ()
-            return config.value
-
-        events: MutableSequence[str] = []
-        environment = EnvironmentImpl(
-            operation_engine=OperationEngineImpl(
-                command_defs=[StagedCommandDef("test", TestCommand, handler)],
-                dependency_defs=[make_application_dependency_def(FunctionMessageDependencyResolver(config))],
-            ),
-        )
-
-        async with environment:
-            assert events == ["factory"]
-            results = [await environment.execute(TestCommand()), await environment.execute(TestCommand())]
-
-        assert results == ["config_value", "config_value"]
-        assert events == ["factory"]
-
-    async def test_executes_message_dependency_effects_before_handler(self) -> None:
-        def config(context: MessageContext) -> Effectful[Config, DependencyEffect]:
+class TestGuards:
+    async def test_executes_guard_effects_before_handler(self) -> None:
+        def config(context: MessageContext) -> Effectful[Config, GuardEffect]:
             return Config(f"{context.message_id} {(yield from TestInternalEffect())}")
 
         async def handle_internal(message_context: MessageContext) -> str:
@@ -687,7 +651,7 @@ class TestMessageDependencies:
         environment = EnvironmentImpl(
             operation_engine=OperationEngineImpl(
                 command_defs=[StagedCommandDef("test", TestCommand, handler)],
-                dependency_defs=[make_message_dependency_def(config)],
+                guard_defs=[GuardDef(config)],
             ),
             effect_defs=[EffectDef(TestInternalEffect, handle_internal)],
         )
@@ -696,24 +660,6 @@ class TestMessageDependencies:
             result = await environment.execute(TestCommand(), "test_message_id")
 
         assert result == "test_message_id effect_result"
-
-    async def test_does_not_resolve_effect_dependencies_when_application_message_dependency_fails(self) -> None:
-        async def resource() -> Resource:
-            raise AssertionError("must not be resolved")
-
-        def config() -> Config:
-            raise ValueError("factory_error")
-
-        environment = EnvironmentImpl(
-            operation_engine=OperationEngineImpl(
-                dependency_defs=[make_application_dependency_def(FunctionMessageDependencyResolver(config))],
-            ),
-            dependency_defs=[EffectDependencyDef(AsyncFunctionEffectDependencyResolver(resource))],
-        )
-
-        with pytest.raises(ValueError, match="factory_error"):
-            async with environment:
-                pass
 
 
 class TestEffectMiddlewares:
@@ -919,9 +865,7 @@ class TestEffectMiddlewares:
         async def middleware(effect_call: EffectCall, call_next: CallNext) -> object:
             raise ValueError("middleware_error")
 
-        def execution_plan(
-            command: TestCommand, application_scope: Scope, message_context: MessageContext
-        ) -> ExecutionPlan[str]:
+        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
             try:
                 yield make_instruction()
             except ValueError as exc:
@@ -959,12 +903,12 @@ class TestEffectMiddlewares:
 
         assert events == []
 
-    async def test_calls_middlewares_for_message_dependency_effects(self) -> None:
+    async def test_calls_middlewares_for_guard_effects(self) -> None:
         async def middleware(effect_call: EffectCall, call_next: CallNext) -> object:
             effects.append(effect_call.effect)
             return await call_next()
 
-        def config() -> Effectful[Config, DependencyEffect]:
+        def config() -> Effectful[Config, GuardEffect]:
             return Config((yield from TestInternalEffect()))
 
         async def handle_internal() -> str:
@@ -978,7 +922,7 @@ class TestEffectMiddlewares:
         environment = EnvironmentImpl(
             operation_engine=OperationEngineImpl(
                 command_defs=[StagedCommandDef("test", TestCommand, handler)],
-                dependency_defs=[make_message_dependency_def(config)],
+                guard_defs=[GuardDef(config)],
             ),
             effect_defs=[EffectDef(TestInternalEffect, handle_internal)],
             effect_middleware_defs=[EffectMiddlewareDef(middleware)],
@@ -1111,9 +1055,7 @@ class TestEffectMiddlewares:
     ) -> EnvironmentImpl:
         """Makes an environment whose command yields one effect and returns its result."""
 
-        def execution_plan(
-            command: TestCommand, application_scope: Scope, message_context: MessageContext
-        ) -> ExecutionPlan[object]:
+        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
             return (yield make_instruction() if instruction is None else instruction)
 
         return EnvironmentImpl(
@@ -1142,7 +1084,6 @@ class TestEffectMiddlewares:
 
 def make_operation_engine_mock(execution_plan: Callable[..., ExecutionPlan[Any]] | None = None) -> Mock:
     operation_engine_mock = Mock(spec=OperationEngine)
-    operation_engine_mock.start.side_effect = Scope
     operation_engine_mock.execute.side_effect = execution_plan
     return operation_engine_mock
 

@@ -5,14 +5,9 @@ from unittest.mock import ANY
 
 import pytest
 
-from fidem.di.core import DependencyNotFoundError, Scope, UnsupportedFunctionError
-from fidem.di.messages import (
-    DependencyEffect,
-    FunctionMessageDependencyResolver,
-    InstanceMessageDependencyResolver,
-    MessageDependencyDef,
-)
+from fidem.di.core import DependencyNotFoundError, UnsupportedFunctionError
 from fidem.effects import DatabaseEffect, DatabaseReadEffect, Effect, EffectContext, Effectful
+from fidem.guards import GuardDef, GuardEffect
 from fidem.messages import Command, Event, MessageContext, StagedHandler, Transaction
 from fidem.operation_engine import (
     AtomicCommandDef,
@@ -29,7 +24,7 @@ from fidem.operation_engine import (
 from fidem.testing import YeildStep, assert_generator
 from tests.effects import TestControlEffect, TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
 from tests.messages import TestCommand, TestEvent
-from tests.stubs import make_application_dependency_def, make_message_dependency_def, run
+from tests.stubs import run
 
 
 class Service:
@@ -58,7 +53,7 @@ class TestExecuteEphemeral:
         engine = make_engine(handler)
 
         assert_generator(
-            generator=engine.execute(command, MessageContext(message_id="test_message_id"), application_scope=Scope()),
+            generator=engine.execute(command, MessageContext(message_id="test_message_id")),
             return_value="command_result",
         )
         assert calls == [HandlerCall(context=MessageContext(message_id="test_message_id"), command=command)]
@@ -79,7 +74,7 @@ class TestExecuteEphemeral:
         engine = make_engine(handler)
 
         assert_generator(
-            generator=engine.execute(command, MessageContext(message_id="test_message_id"), application_scope=Scope()),
+            generator=engine.execute(command, MessageContext(message_id="test_message_id")),
             steps=[YeildStep(make_expected_instruction(effect, command), "effect_result")],
             return_value="command_result effect_result",
         )
@@ -93,7 +88,7 @@ class TestExecuteEphemeral:
         engine = make_engine(handler)
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope()).send(None)
+            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert exc_info.value.args == (effect,)
 
@@ -112,7 +107,7 @@ class TestExecuteEphemeral:
         engine = make_engine(handler)
 
         with pytest.raises(UnsupportedEffectError):
-            engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope()).send(None)
+            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert is_handler_closed
 
@@ -127,7 +122,7 @@ class TestExecuteEphemeral:
 
         is_handler_closed = False
         engine = make_engine(handler)
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope())
+        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
         execution_plan.send(None)
 
         execution_plan.close()
@@ -137,33 +132,23 @@ class TestExecuteEphemeral:
     def test_generates_same_effect_ids_for_same_message_id(self) -> None:
         engine = make_engine(handle_with_three_effects)
 
-        effect_ids1 = collect_effect_ids(
-            engine.execute(TestCommand(), MessageContext(message_id="test_message_id"), application_scope=Scope())
-        )
-        effect_ids2 = collect_effect_ids(
-            engine.execute(TestCommand(), MessageContext(message_id="test_message_id"), application_scope=Scope())
-        )
+        effect_ids1 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
+        effect_ids2 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
 
         assert effect_ids1 == effect_ids2
 
     def test_generates_unique_effect_ids_within_command(self) -> None:
         engine = make_engine(handle_with_three_effects)
 
-        effect_ids = collect_effect_ids(
-            engine.execute(TestCommand(), MessageContext(message_id="test_message_id"), application_scope=Scope())
-        )
+        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
 
         assert len(set(effect_ids)) == 3
 
     def test_generates_different_effect_ids_for_different_message_ids(self) -> None:
         engine = make_engine(handle_with_three_effects)
 
-        effect_ids1 = collect_effect_ids(
-            engine.execute(TestCommand(), MessageContext(message_id="test_message_id1"), application_scope=Scope())
-        )
-        effect_ids2 = collect_effect_ids(
-            engine.execute(TestCommand(), MessageContext(message_id="test_message_id2"), application_scope=Scope())
-        )
+        effect_ids1 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id1")))
+        effect_ids2 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id2")))
 
         assert set(effect_ids1).isdisjoint(effect_ids2)
 
@@ -176,7 +161,7 @@ class TestExecuteEphemeral:
             return "unreachable"
 
         engine = make_engine(handler)
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope())
+        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
         execution_plan.send(None)
 
         with pytest.raises(StopIteration) as exc_info:
@@ -186,7 +171,7 @@ class TestExecuteEphemeral:
 
     def test_raises_instruction_error_when_handler_does_not_handle_it(self) -> None:
         engine = make_engine(handle_with_three_effects)
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope())
+        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
         execution_plan.send(None)
         effect_error = ValueError("effect_error")
 
@@ -199,7 +184,7 @@ class TestExecuteEphemeral:
         engine = OperationEngineImpl(command_defs=[])
 
         with pytest.raises(CommandNotDefinedError) as exc_info:
-            engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope()).send(None)
+            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert exc_info.value.args == (TestCommand,)
 
@@ -213,7 +198,7 @@ class TestExecuteEphemeral:
         engine = OperationEngineImpl(command_defs=[command_def])
 
         with pytest.raises(NotImplementedError):
-            engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope()).send(None)
+            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
 
     def test_raises_not_implemented_error_when_command_is_atomic(self) -> None:
         def transaction() -> Effectful[str, DatabaseEffect[Any] | Event]:
@@ -227,7 +212,7 @@ class TestExecuteEphemeral:
         engine = OperationEngineImpl(command_defs=[AtomicCommandDef("test", TestCommand, handler)])
 
         with pytest.raises(NotImplementedError):
-            engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope()).send(None)
+            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
 
 
 class TestCommandDefinition:
@@ -255,7 +240,7 @@ class TestCommandDefinition:
         with pytest.raises(UnsupportedFunctionError):
             make_engine(handler)  # pyright: ignore[reportArgumentType] - checks a wrong handler
 
-    def test_raises_dependency_not_found_error_when_handler_parameter_has_no_dependency(self) -> None:
+    def test_raises_dependency_not_found_error_when_handler_parameter_has_no_guard(self) -> None:
         def handler(service: Service) -> Effectful[str, Effect[Any]]:
             yield from ()
             return "command_result"
@@ -266,14 +251,14 @@ class TestCommandDefinition:
         assert exc_info.value.args == (handler, "service", Service)
 
 
-class TestMessageDependencies:
-    def test_resolves_message_dependencies_with_their_effects_before_handler(self) -> None:
-        def other(context: MessageContext) -> Effectful[OtherService, DependencyEffect]:
+class TestGuards:
+    def test_runs_guards_with_their_effects_before_handler(self) -> None:
+        def other(context: MessageContext) -> Effectful[OtherService, GuardEffect]:
             events.append(f"other {context.message_id}")
             assert (yield from internal_effect) == "internal_result"
             return OtherService()
 
-        def service(other: OtherService) -> Effectful[Service, DependencyEffect]:
+        def service(other: OtherService) -> Effectful[Service, GuardEffect]:
             events.append("service")
             assert (yield from external_effect) == "external_result"
             return Service()
@@ -287,10 +272,10 @@ class TestMessageDependencies:
         internal_effect = TestInternalEffect()
         external_effect = TestExternalReadEffect()
         command = TestCommand()
-        engine = make_engine(handler, [make_message_dependency_def(service), make_message_dependency_def(other)])
+        engine = make_engine(handler, [GuardDef(service), GuardDef(other)])
 
         assert_generator(
-            generator=engine.execute(command, MessageContext(message_id="test_message_id"), application_scope=Scope()),
+            generator=engine.execute(command, MessageContext(message_id="test_message_id")),
             steps=[
                 YeildStep(make_expected_instruction(internal_effect, command), "internal_result"),
                 YeildStep(make_expected_instruction(external_effect, command), "external_result"),
@@ -299,8 +284,8 @@ class TestMessageDependencies:
         )
         assert events == ["other test_message_id", "service", "handler"]
 
-    def test_resolves_message_dependencies_for_each_message(self) -> None:
-        def service() -> Effectful[Service, DependencyEffect]:
+    def test_runs_guards_for_each_message(self) -> None:
+        def service() -> Effectful[Service, GuardEffect]:
             yield from ()
             return Service()
 
@@ -308,15 +293,15 @@ class TestMessageDependencies:
             yield from ()
             return service
 
-        engine = make_engine(handler, [make_message_dependency_def(service)])
+        engine = make_engine(handler, [GuardDef(service)])
 
-        first = run(engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope()))
-        second = run(engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope()))
+        first = run(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+        second = run(engine.execute(TestCommand(), MESSAGE_CONTEXT))
 
         assert first is not second
 
-    def test_throws_effect_error_into_factory(self) -> None:
-        def service() -> Effectful[Service, DependencyEffect]:
+    def test_throws_effect_error_into_guard(self) -> None:
+        def service() -> Effectful[Service, GuardEffect]:
             try:
                 yield from TestInternalEffect()
             except ValueError:
@@ -327,8 +312,8 @@ class TestMessageDependencies:
             yield from ()
             return type(service).__name__
 
-        engine = make_engine(handler, [make_message_dependency_def(service)])
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope())
+        engine = make_engine(handler, [GuardDef(service)])
+        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
         execution_plan.send(None)
 
         with pytest.raises(StopIteration) as exc_info:
@@ -336,8 +321,8 @@ class TestMessageDependencies:
 
         assert exc_info.value.value == "Service"
 
-    def test_raises_factory_error_and_does_not_call_handler(self) -> None:
-        def service() -> Effectful[Service, DependencyEffect]:
+    def test_raises_guard_error_and_does_not_call_handler(self) -> None:
+        def service() -> Effectful[Service, GuardEffect]:
             yield from ()
             raise PermissionError("forbidden")
 
@@ -348,101 +333,74 @@ class TestMessageDependencies:
             return "command_result"
 
         is_handler_called = False
-        engine = make_engine(handler, [make_message_dependency_def(service)])
+        engine = make_engine(handler, [GuardDef(service)])
 
         with pytest.raises(PermissionError, match="forbidden"):
-            engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope()).send(None)
+            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert not is_handler_called
 
     @pytest.mark.parametrize("effect", [TestDatabaseWriteEffect(), TestControlEffect(), TestCommand()])
-    def test_raises_unsupported_effect_error_when_factory_yields_not_dependency_effect(
+    def test_raises_unsupported_effect_error_when_guard_yields_not_guard_effect(
         self,
         effect: Effect[Any],
     ) -> None:
-        def service() -> Effectful[Service, DependencyEffect]:
-            nonlocal is_factory_closed
+        def service() -> Effectful[Service, GuardEffect]:
+            nonlocal is_guard_closed
             try:
                 yield from effect  # pyright: ignore[reportReturnType] - checks a wrong effect
-            except Exception:  # noqa: BLE001 - checks that no error reaches the factory
+            except Exception:  # noqa: BLE001 - checks that no error reaches the guard
                 return Service()
             finally:
-                is_factory_closed = True
+                is_guard_closed = True
             raise AssertionError("unreachable")
 
         def handler(service: Service) -> Effectful[str, Effect[Any]]:
             yield from ()
             return "command_result"
 
-        is_factory_closed = False
-        engine = make_engine(handler, [make_message_dependency_def(service)])
+        is_guard_closed = False
+        engine = make_engine(handler, [GuardDef(service)])
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=Scope()).send(None)
+            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert exc_info.value.args == (effect,)
-        assert is_factory_closed
+        assert is_guard_closed
 
-    def test_passes_application_dependencies_from_application_scope(self) -> None:
-        def handler(service: Service) -> Effectful[Service, Effect[Any]]:
-            yield from ()
-            return service
+    def test_generates_same_guard_effect_ids_for_same_message_id(self) -> None:
+        engine = make_engine(handle_service_with_three_effects, [GuardDef(make_service_with_two_effects)])
 
-        service = Service()
-        engine = make_engine(handler, [make_application_dependency_def(InstanceMessageDependencyResolver(service))])
-        application_scope = engine.start()
-
-        assert run(engine.execute(TestCommand(), MESSAGE_CONTEXT, application_scope=application_scope)) is service
-
-    def test_generates_same_factory_effect_ids_for_same_message_id(self) -> None:
-        engine = make_engine(
-            handle_service_with_three_effects, [make_message_dependency_def(make_service_with_two_effects)]
-        )
-
-        effect_ids1 = collect_effect_ids(
-            engine.execute(TestCommand(), MessageContext(message_id="test_message_id"), application_scope=Scope())
-        )
-        effect_ids2 = collect_effect_ids(
-            engine.execute(TestCommand(), MessageContext(message_id="test_message_id"), application_scope=Scope())
-        )
+        effect_ids1 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
+        effect_ids2 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
 
         assert effect_ids1 == effect_ids2
         assert len(set(effect_ids1)) == 5
 
-    def test_does_not_shift_handler_effect_ids_when_dependency_added(self) -> None:
+    def test_does_not_shift_handler_effect_ids_when_guard_added(self) -> None:
         handler_effect_ids = collect_effect_ids(
-            make_engine(handle_with_three_effects).execute(
-                TestCommand(), MessageContext(message_id="test_message_id"), application_scope=Scope()
-            )
+            make_engine(handle_with_three_effects).execute(TestCommand(), MessageContext(message_id="test_message_id"))
         )
-        engine = make_engine(
-            handle_service_with_three_effects, [make_message_dependency_def(make_service_with_two_effects)]
-        )
+        engine = make_engine(handle_service_with_three_effects, [GuardDef(make_service_with_two_effects)])
 
-        effect_ids = collect_effect_ids(
-            engine.execute(TestCommand(), MessageContext(message_id="test_message_id"), application_scope=Scope())
-        )
+        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
 
         assert effect_ids[2:] == handler_effect_ids
 
-    def test_does_not_repeat_factory_effect_ids_in_message_whose_id_extends_other_message_id(self) -> None:
+    def test_does_not_repeat_guard_effect_ids_in_message_whose_id_extends_other_message_id(self) -> None:
         engine = make_engine(
             handler=handle_service_with_three_effects,
-            dependency_defs=[make_message_dependency_def(make_service_with_two_effects)],
+            guard_defs=[GuardDef(make_service_with_two_effects)],
         )
-        factory_effect_ids = collect_effect_ids(
-            engine.execute(TestCommand(), MessageContext(message_id="m"), application_scope=Scope())
-        )[:2]
+        guard_effect_ids = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="m")))[:2]
         message_id = f"m::{Service.__module__}.{Service.__qualname__}"
 
-        effect_ids = collect_effect_ids(
-            engine.execute(TestCommand(), MessageContext(message_id=message_id), application_scope=Scope())
-        )
+        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id=message_id)))
 
-        assert set(effect_ids).isdisjoint(factory_effect_ids)
+        assert set(effect_ids).isdisjoint(guard_effect_ids)
 
-    def test_generates_different_factory_effect_ids_for_different_dependencies(self) -> None:
-        def other() -> Effectful[OtherService, DependencyEffect]:
+    def test_generates_different_guard_effect_ids_for_different_guards(self) -> None:
+        def other() -> Effectful[OtherService, GuardEffect]:
             yield from TestInternalEffect()
             yield from TestExternalReadEffect()
             return OtherService()
@@ -453,44 +411,24 @@ class TestMessageDependencies:
 
         engine = make_engine(
             handler=handler,
-            dependency_defs=[
-                make_message_dependency_def(make_service_with_two_effects),
-                make_message_dependency_def(other),
+            guard_defs=[
+                GuardDef(make_service_with_two_effects),
+                GuardDef(other),
             ],
         )
 
-        effect_ids = collect_effect_ids(
-            engine.execute(TestCommand(), MessageContext(message_id="test_message_id"), application_scope=Scope())
-        )
+        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
 
         assert len(set(effect_ids)) == 4
 
 
-class TestStart:
-    def test_resolves_application_dependencies_in_topological_order(self) -> None:
-        def service(other: OtherService) -> Service:
-            events.append("service")
-            return Service()
-
-        events: MutableSequence[str] = []
-        other_def = make_application_dependency_def(InstanceMessageDependencyResolver(OtherService()))
-        service_def = make_application_dependency_def(FunctionMessageDependencyResolver(service))
-        engine = OperationEngineImpl(dependency_defs=[service_def, other_def])
-
-        scope = engine.start()
-
-        assert events == ["service"]
-        assert isinstance(scope.get(service_def.key), Service)
-        assert isinstance(scope.get(other_def.key), OtherService)
-
-
 def make_engine(
     handler: StagedHandler[Any, Any],
-    dependency_defs: Collection[MessageDependencyDef[Any]] = (),
+    guard_defs: Collection[GuardDef[Any]] = (),
 ) -> OperationEngineImpl:
     return OperationEngineImpl(
         command_defs=[StagedCommandDef("test", TestCommand, handler)],
-        dependency_defs=dependency_defs,
+        guard_defs=guard_defs,
     )
 
 
@@ -505,7 +443,7 @@ def handle_service_with_three_effects(service: Service) -> Effectful[str, Effect
     return (yield from handle_with_three_effects())
 
 
-def make_service_with_two_effects() -> Effectful[Service, DependencyEffect]:
+def make_service_with_two_effects() -> Effectful[Service, GuardEffect]:
     yield from TestInternalEffect()
     yield from TestExternalReadEffect()
     return Service()

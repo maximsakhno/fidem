@@ -6,13 +6,7 @@ from enum import Enum, auto
 from random import Random
 from typing import Any, Final
 
-from fidem.di.core import DependencyKey, Scope
-from fidem.di.messages import (
-    DEPENDENCY_EFFECT_TYPES,
-    MessageDependencyContainer,
-    MessageDependencyDef,
-    PreparedMessageHandler,
-)
+from fidem.di.core import DependencyKey
 from fidem.effects import (
     DatabaseEffect,
     Effect,
@@ -22,6 +16,7 @@ from fidem.effects import (
     ExternalEffect,
     InternalEffect,
 )
+from fidem.guards import GUARD_EFFECT_TYPES, GuardContainer, GuardDef, PreparedMessageHandler
 from fidem.messages import (
     AtomicHandler,
     Command,
@@ -78,17 +73,10 @@ class CallEffectHandlerInstruction[ResultT](Instruction[ResultT]):
 
 class OperationEngine(ABC):
     @abstractmethod
-    def start(self) -> Scope:
-        """Resolves application dependencies of messages."""
-        raise NotImplementedError
-
-    @abstractmethod
     def execute[ResultT](
         self,
         command: Command[ResultT],
         message_context: MessageContext,
-        *,
-        application_scope: Scope,
     ) -> ExecutionPlan[ResultT]:
         raise NotImplementedError
 
@@ -109,7 +97,7 @@ class UnsupportedEffectError(Exception):
 
 
 class _EffectIdGenerator:
-    """Generates deterministic effect ids and seeds lazily because seeding is costly and many factories yield nothing."""
+    """Generates deterministic effect ids and seeds lazily because seeding is costly and many guards yield nothing."""
 
     def __init__(self, seed: str) -> None:
         self._seed: str = seed
@@ -126,7 +114,7 @@ class _PreparedCommand:
     command_def: CommandDef[Any]
     handler: PreparedMessageHandler
     seeds: Sequence[str]
-    """Identify the handler dependencies in the seeds of the ids of their effects, in the order of the steps."""
+    """Identify the guards in the seeds of the ids of their effects, in the order of the steps."""
 
 
 class OperationEngineImpl(OperationEngine):
@@ -136,11 +124,11 @@ class OperationEngineImpl(OperationEngine):
     def __init__(
         self,
         command_defs: Collection[CommandDef[Any]] = (),
-        dependency_defs: Collection[MessageDependencyDef[Any]] = (),
+        guard_defs: Collection[GuardDef[Any]] = (),
     ) -> None:
         type_to_command_def = self._make_type_to_command_def(command_defs)
-        self._dependency_container: MessageDependencyContainer = MessageDependencyContainer(
-            dependency_defs=dependency_defs,
+        self._guard_container: GuardContainer = GuardContainer(
+            guard_defs=guard_defs,
             message_types=tuple(type_to_command_def),
         )
         self._type_to_command: Mapping[type[Command[Any]], _PreparedCommand] = {
@@ -166,7 +154,7 @@ class OperationEngineImpl(OperationEngine):
         return type_to_command_def
 
     def _prepare_command(self, command_def: CommandDef[Any]) -> _PreparedCommand:
-        handler = self._dependency_container.prepare_message_handler(command_def.message_type, command_def.handler)
+        handler = self._guard_container.prepare_message_handler(command_def.message_type, command_def.handler)
         return _PreparedCommand(
             command_def=command_def,
             handler=handler,
@@ -180,18 +168,10 @@ class OperationEngineImpl(OperationEngine):
             return f":{key.name}:{dependency_type.__module__}.{dependency_type.__qualname__}"
         return f":{key.name}:{dependency_type!r}"
 
-    def start(self) -> Scope:
-        scope = Scope()
-        for step in self._dependency_container.application_steps:
-            step.run(scope)
-        return scope
-
     def execute[ResultT](
         self,
         command: Command[ResultT],
         message_context: MessageContext,
-        *,
-        application_scope: Scope,
     ) -> ExecutionPlan[ResultT]:
         prepared_command = self._get_command(type(command))
         execution_mode = prepared_command.command_def.execution_mode
@@ -203,14 +183,14 @@ class OperationEngineImpl(OperationEngine):
             raise NotImplementedError("Atomic command handlers are not implemented yet")
 
         message_id = message_context.message_id
-        scopes = (application_scope, self._dependency_container.make_message_scope(command, message_context))
+        scope = self._guard_container.make_message_scope(command, message_context)
         # The length prefix keeps the seeds of different messages apart whatever their ids are.
         message_seed = f"{len(message_id)}:{message_id}"
         for step, seed in zip(prepared_command.handler.steps, prepared_command.seeds, strict=True):
-            # Each dependency has its own ids, so adding a dependency does not shift the ids of the handler effects.
+            # Each guard has its own ids, so adding a guard does not shift the ids of the handler effects.
             yield from self._run(
-                effectful=step.run(scopes),
-                allowed_effect_types=DEPENDENCY_EFFECT_TYPES,
+                effectful=step.run(scope),
+                allowed_effect_types=GUARD_EFFECT_TYPES,
                 generate_effect_id=_EffectIdGenerator(message_seed + seed),
                 message_context=message_context,
                 message=command,
@@ -219,7 +199,7 @@ class OperationEngineImpl(OperationEngine):
         # Effect ids are derived from the message id so that replaying a command reproduces them.
         return (
             yield from self._run(
-                effectful=prepared_command.handler.call(scopes),
+                effectful=prepared_command.handler.call(scope),
                 allowed_effect_types=self._ANY_EFFECT_TYPES,
                 generate_effect_id=_EffectIdGenerator(message_seed),
                 message_context=message_context,

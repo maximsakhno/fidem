@@ -1,14 +1,8 @@
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Generator, Sequence
 from typing import Any
 
 import pytest
 
-from fidem.di.messages import (
-    GeneratorFunctionMessageDependencyResolver,
-    MessageDependencyDef,
-    MessageDependencyLifetime,
-    MessageDependencyResolver,
-)
 from fidem.testing import RaiseStep, YeildStep
 
 
@@ -30,14 +24,6 @@ class GeneratorFunctionStub:
                 assert send_value == step.send_value
 
         return self._return_value
-
-
-def make_message_dependency_def(factory: Callable[..., Any]) -> MessageDependencyDef[Any]:
-    return MessageDependencyDef(GeneratorFunctionMessageDependencyResolver(factory))
-
-
-def make_application_dependency_def(resolver: MessageDependencyResolver[Any]) -> MessageDependencyDef[Any]:
-    return MessageDependencyDef(resolver=resolver, lifetime=MessageDependencyLifetime.APPLICATION)
 
 
 def run[ResultT](generator: Generator[Any, Any, ResultT]) -> ResultT:
