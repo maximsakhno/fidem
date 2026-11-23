@@ -3,15 +3,9 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from fidem.di.messages import (
-    DependencyEffect,
-    FunctionMessageDependencyResolver,
-    GeneratorFunctionMessageDependencyResolver,
-    MessageDependencyDef,
-    MessageDependencyLifetime,
-)
 from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, Effectful
 from fidem.environment import EffectDef, EnvironmentImpl
+from fidem.guards import Guard, GuardDef, GuardEffect
 from fidem.messages import Command
 from fidem.operation_engine import OperationEngineImpl, StagedCommandDef
 
@@ -72,7 +66,7 @@ class RenameUserCommand(AuthenticatedCommand[User]):
     name: str
 
 
-# ── Message dependencies ──────────────────────────────────
+# ── Guards ────────────────────────────────────────────────
 class TokenVerifier:
     def __init__(self, secret: str) -> None:
         self._secret: str = secret
@@ -94,21 +88,18 @@ class Admin:
     user: User
 
 
-# Created once on start, before any message, so it cannot yield effects.
-def token_verifier() -> TokenVerifier:
-    print("[start] creating the token verifier")
-    return TokenVerifier(TOKEN_SECRET)
+# Guards get their settings through a closure.
+def make_current_user(verifier: TokenVerifier) -> Guard[CurrentUser]:
+    # The guard gets the command by its base class, so it serves every authenticated command.
+    def current_user(command: AuthenticatedCommand[Any]) -> Effectful[CurrentUser, GuardEffect]:
+        user_id = verifier.verify(command.token)
+        return CurrentUser((yield from GetUserEffect(user_id)))
+
+    return current_user
 
 
-# The factory gets the command by its base class, so it serves every authenticated command.
-def current_user(
-    command: AuthenticatedCommand[Any], verifier: TokenVerifier
-) -> Effectful[CurrentUser, DependencyEffect]:
-    user_id = verifier.verify(command.token)
-    return CurrentUser((yield from GetUserEffect(user_id)))
-
-
-def admin(current_user: CurrentUser) -> Effectful[Admin, DependencyEffect]:
+# A handler that takes `Admin` runs only for admins.
+def admin(current_user: CurrentUser) -> Effectful[Admin, GuardEffect]:
     yield from ()
     if not current_user.user.is_admin:
         raise PermissionDeniedError(f"{current_user.user.name} is not an admin")
@@ -116,7 +107,7 @@ def admin(current_user: CurrentUser) -> Effectful[Admin, DependencyEffect]:
 
 
 # ── Command handler ───────────────────────────────────────
-# The handler runs only when the factories have authenticated and authorized the command.
+# The handler runs only when the guards have authenticated and authorized the command.
 def rename_user(admin: Admin, command: RenameUserCommand) -> Effectful[User, Effect[Any]]:
     print(f"[handler] {admin.user.name} renames {command.user_id} to {command.name}")
     user = yield from GetUserEffect(command.user_id)
@@ -127,13 +118,9 @@ async def main() -> None:
     environment = EnvironmentImpl(
         operation_engine=OperationEngineImpl(
             command_defs=[StagedCommandDef("rename_user", RenameUserCommand, rename_user)],
-            dependency_defs=[
-                MessageDependencyDef(
-                    resolver=FunctionMessageDependencyResolver(token_verifier),
-                    lifetime=MessageDependencyLifetime.APPLICATION,
-                ),
-                MessageDependencyDef(GeneratorFunctionMessageDependencyResolver(current_user)),
-                MessageDependencyDef(GeneratorFunctionMessageDependencyResolver(admin)),
+            guard_defs=[
+                GuardDef(make_current_user(TokenVerifier(TOKEN_SECRET))),
+                GuardDef(admin),
             ],
         ),
         effect_defs=[

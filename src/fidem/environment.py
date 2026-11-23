@@ -9,7 +9,7 @@ from types import TracebackType
 from typing import Any, Self
 from uuid import uuid4
 
-from fidem.di.core import Scope, UnsupportedFunctionError
+from fidem.di.core import UnsupportedFunctionError
 from fidem.di.effects import (
     ClosableScope,
     ClosableScopes,
@@ -76,12 +76,6 @@ class EnvironmentAlreadyStartedError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
-class _ApplicationScopes:
-    effects: ClosableScope
-    messages: Scope
-
-
-@dataclass(frozen=True, slots=True)
 class _PreparedEffect:
     handler: PreparedEffectHandler
     middlewares: Sequence[EffectMiddleware]
@@ -105,7 +99,7 @@ class EnvironmentImpl(Environment):
             effect_type: self._prepare_effect(effect_def, effect_middleware_defs)
             for effect_type, effect_def in type_to_effect_def.items()
         }
-        self._application_scopes: _ApplicationScopes | None = None
+        self._application_scope: ClosableScope | None = None
 
     @classmethod
     def _make_type_to_effect_def(
@@ -139,11 +133,9 @@ class EnvironmentImpl(Environment):
         )
 
     async def __aenter__(self) -> Self:
-        if self._application_scopes is not None:
+        if self._application_scope is not None:
             raise EnvironmentAlreadyStartedError
-        messages_scope = self._operation_engine.start()
-        effects_scope = await self._dependency_container.start()
-        self._application_scopes = _ApplicationScopes(effects=effects_scope, messages=messages_scope)
+        self._application_scope = await self._dependency_container.start()
         return self
 
     async def __aexit__(
@@ -152,31 +144,30 @@ class EnvironmentImpl(Environment):
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        application_scopes = self._get_application_scopes()
-        self._application_scopes = None
-        await self._dependency_container.stop(application_scopes.effects, exc)
+        application_scope = self._get_application_scope()
+        self._application_scope = None
+        await self._dependency_container.stop(application_scope, exc)
 
-    def _get_application_scopes(self) -> _ApplicationScopes:
-        if self._application_scopes is None:
+    def _get_application_scope(self) -> ClosableScope:
+        if self._application_scope is None:
             raise EnvironmentNotStartedError
-        return self._application_scopes
+        return self._application_scope
 
     async def execute[ResultT](
         self,
         command: Command[ResultT],
         message_id: MessageId | None = None,
     ) -> ResultT:
-        application_scopes = self._get_application_scopes()
+        application_scope = self._get_application_scope()
         if message_id is None:
             message_id = uuid4().hex
         message_context = MessageContext(message_id=message_id)
         execution_plan = self._operation_engine.execute(
             command=command,
             message_context=message_context,
-            application_scope=application_scopes.messages,
         )
         async with self._dependency_container.make_message_scope(command, message_context) as message_scope:
-            return await self._run_execution_plan(execution_plan, (application_scopes.effects, message_scope))
+            return await self._run_execution_plan(execution_plan, (application_scope, message_scope))
 
     async def _run_execution_plan[ResultT](
         self,

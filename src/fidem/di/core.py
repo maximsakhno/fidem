@@ -232,12 +232,12 @@ class DependencyGraph[DependencyDefT: DependencyDef[Any, Any]]:
     def __init__(
         self,
         dependency_defs: Collection[DependencyDefT],
-        application_lifetime: IntEnum,
+        application_lifetime: IntEnum | None,
         subject_node: Node,
         subject_types: Collection[type],
         builtin_nodes: Collection[Node] = (),
     ) -> None:
-        self._application_lifetime: IntEnum = application_lifetime
+        self._application_lifetime: IntEnum | None = application_lifetime
         self._subject_node: Node = subject_node
         self._builtin_nodes: Collection[Node] = builtin_nodes
         self.dependency_defs: Final[Mapping[DependencyKey, DependencyDefT]] = self._make_key_to_dependency_def(
