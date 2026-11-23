@@ -1,12 +1,13 @@
 import asyncio
-import contextlib
+from asyncio import Barrier, CancelledError, sleep, timeout
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Collection, MutableSequence, Sequence
-from typing import Any, NamedTuple
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import Any
 
 import pytest
 
 from fidem.di.core import (
-    MESSAGE_CONTEXT_KEY,
     AmbiguousDependencyError,
     DependencyCycleError,
     DependencyKey,
@@ -14,7 +15,6 @@ from fidem.di.core import (
     DependencyNotFoundError,
     DuplicateDependencyError,
     MissingAnnotationError,
-    ScopeNotAvailableError,
     UnresolvedAnnotationError,
     UnsupportedFunctionError,
     UnsupportedLifetimeError,
@@ -60,12 +60,14 @@ class Generic[T]:
     pass
 
 
-class ServiceCall(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class ServiceCall:
     other: OtherService
     base: BaseService
 
 
-class BuiltinDependencies(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class BuiltinDependencies:
     message: Message[Any]
     message_context: MessageContext
     effect: Effect[Any]
@@ -198,7 +200,7 @@ class TestAsyncGeneratorFunctionDependencyResolver:
 
     async def test_does_not_raise_when_generator_suppresses_error(self) -> None:
         async def service() -> AsyncGenerator[Service]:
-            with contextlib.suppress(ValueError):
+            with suppress(ValueError):
                 yield Service()
 
         guard = await AsyncGeneratorFunctionEffectDependencyResolver(service).resolve({})
@@ -262,8 +264,8 @@ class TestScope:
     async def test_closes_dependencies_in_reverse_order(self) -> None:
         events: MutableSequence[str] = []
         scope = ClosableScope()
-        scope.add(DependencyKey(name="first", type=Service), await make_recording_guard(events, "first"))
-        scope.add(DependencyKey(name="second", type=Service), await make_recording_guard(events, "second"))
+        await scope.add(DependencyKey(name="first", type=Service), await make_recording_guard(events, "first"))
+        await scope.add(DependencyKey(name="second", type=Service), await make_recording_guard(events, "second"))
 
         await scope.close(None)
 
@@ -272,7 +274,7 @@ class TestScope:
     async def test_raises_single_closing_error_as_is(self) -> None:
         error = ValueError("closing_error")
         scope = ClosableScope()
-        scope.add(DependencyKey(name="", type=Service), await make_failing_guard(error))
+        await scope.add(DependencyKey(name="", type=Service), await make_failing_guard(error))
 
         with pytest.raises(ValueError, match="closing_error") as exc_info:
             await scope.close(None)
@@ -283,8 +285,8 @@ class TestScope:
         first_error = ValueError("first")
         second_error = ValueError("second")
         scope = ClosableScope()
-        scope.add(DependencyKey(name="first", type=Service), await make_failing_guard(first_error))
-        scope.add(DependencyKey(name="second", type=Service), await make_failing_guard(second_error))
+        await scope.add(DependencyKey(name="first", type=Service), await make_failing_guard(first_error))
+        await scope.add(DependencyKey(name="second", type=Service), await make_failing_guard(second_error))
 
         with pytest.raises(ExceptionGroup) as exc_info:
             await scope.close(None)
@@ -302,7 +304,7 @@ class TestScope:
         errors: MutableSequence[Exception] = []
         error = ValueError("error")
         scope = ClosableScope()
-        scope.add(EFFECT_KEY, await AsyncGeneratorFunctionEffectDependencyResolver(service).resolve({}))
+        await scope.add(EFFECT_KEY, await AsyncGeneratorFunctionEffectDependencyResolver(service).resolve({}))
 
         with pytest.raises(ValueError, match="error"):
             async with scope:
@@ -317,9 +319,9 @@ class TestScope:
             finally:
                 raise ValueError("closing_error")
 
-        cancellation = asyncio.CancelledError()
+        cancellation = CancelledError()
         scope = ClosableScope()
-        scope.add(
+        await scope.add(
             key=DependencyKey(name="", type=Service),
             guard=await AsyncGeneratorFunctionEffectDependencyResolver(service).resolve({}),
         )
@@ -330,7 +332,7 @@ class TestScope:
 
     async def test_does_not_raise_when_scope_error_is_the_only_error(self) -> None:
         scope = ClosableScope()
-        scope.add(DependencyKey(name="", type=Service), ValueDependencyGuard(Service()))
+        await scope.add(DependencyKey(name="", type=Service), ValueDependencyGuard(Service()))
 
         await scope.close(ValueError("scope_error"))
 
@@ -758,45 +760,11 @@ class TestEffectHandlerResolution:
 
         assert events == ["service"]
 
-    async def test_raises_scope_not_available_error_when_dependency_needs_unavailable_scope(self) -> None:
-        async def service() -> Service:
-            raise AssertionError("must not be resolved")
-
-        async def handler(service: Service) -> None:
-            pass
-
-        container = EffectDependencyContainer(
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(service), lifetime=EffectDependencyLifetime.MESSAGE
-                )
-            ],
-        )
-        prepared_handler = container.prepare_effect_handler(TestInternalEffect, handler)
-        scopes = make_scopes(TestInternalEffect())
-
-        with pytest.raises(ScopeNotAvailableError) as exc_info:
-            await prepared_handler.resolve([scopes[0], None, scopes[2]])
-
-        assert exc_info.value.args == (EffectDependencyLifetime.MESSAGE, DependencyKey(name="", type=Service))
-
-    async def test_raises_scope_not_available_error_when_handler_needs_builtin_of_unavailable_scope(self) -> None:
-        async def handler(message_context: MessageContext) -> None:
-            pass
-
-        prepared_handler = EffectDependencyContainer().prepare_effect_handler(TestInternalEffect, handler)
-        scopes = make_scopes(TestInternalEffect())
-
-        with pytest.raises(ScopeNotAvailableError) as exc_info:
-            await prepared_handler.call([scopes[0], None, scopes[2]])
-
-        assert exc_info.value.args == (EffectDependencyLifetime.MESSAGE, MESSAGE_CONTEXT_KEY)
-
 
 class TestApplicationLifecycle:
     @pytest.mark.timeout(5)
     async def test_resolves_independent_dependencies_concurrently(self) -> None:
-        barrier = asyncio.Barrier(2)
+        barrier = Barrier(2)
 
         async def service() -> Service:
             await barrier.wait()
@@ -813,7 +781,7 @@ class TestApplicationLifecycle:
             ],
         )
 
-        async with asyncio.timeout(1):
+        async with timeout(1):
             scope = await container.start()
 
         assert DependencyKey(name="", type=Service) in scope
@@ -822,14 +790,14 @@ class TestApplicationLifecycle:
     async def test_resolves_dependency_after_its_dependencies_and_closes_it_before_them(self) -> None:
         async def base() -> AsyncGenerator[Config]:
             events.append("start base")
-            await asyncio.sleep(0)
+            await sleep(0)
             yield Config()
             events.append("stop base")
 
         async def other(base: Config) -> AsyncGenerator[OtherService]:
             events.append("start other")
             yield OtherService()
-            await asyncio.sleep(0)
+            await sleep(0)
             events.append("stop other")
 
         async def service(other: OtherService, base: Config) -> AsyncGenerator[Service]:
@@ -860,7 +828,7 @@ class TestApplicationLifecycle:
 
     @pytest.mark.timeout(5)
     async def test_closes_independent_dependencies_concurrently(self) -> None:
-        barrier = asyncio.Barrier(2)
+        barrier = Barrier(2)
 
         async def service() -> AsyncGenerator[Service]:
             yield Service()
@@ -878,7 +846,7 @@ class TestApplicationLifecycle:
         )
         scope = await container.start()
 
-        async with asyncio.timeout(1):
+        async with timeout(1):
             await container.stop(scope, None)
 
     async def test_closes_resolved_dependencies_and_raises_exception_group_when_resolution_fails(self) -> None:

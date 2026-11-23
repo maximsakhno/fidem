@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from random import Random
 from typing import Any, Final
-from uuid import uuid4
 
 from fidem.di.core import DependencyKey, Scope
 from fidem.di.messages import (
@@ -30,7 +29,6 @@ from fidem.messages import (
     Message,
     MessageContext,
     MessageHandler,
-    MessageId,
     StagedHandler,
 )
 
@@ -72,21 +70,23 @@ type ExecutionPlan[ResultT] = Effectful[ResultT, Instruction[Any]]
 
 @dataclass(frozen=True, slots=True)
 class CallEffectHandlerInstruction[ResultT](Instruction[ResultT]):
-    context: EffectContext
+    message_context: MessageContext
+    message: Message[Any]
+    effect_context: EffectContext
     effect: HandledEffect[ResultT]
 
 
 class OperationEngine(ABC):
     @abstractmethod
-    def start(self) -> ExecutionPlan[Scope]:
-        """Returns the plan that resolves application dependencies of messages."""
+    def start(self) -> Scope:
+        """Resolves application dependencies of messages."""
         raise NotImplementedError
 
     @abstractmethod
     def execute[ResultT](
         self,
         command: Command[ResultT],
-        message_id: MessageId | None = None,
+        message_context: MessageContext,
         *,
         application_scope: Scope,
     ) -> ExecutionPlan[ResultT]:
@@ -180,16 +180,16 @@ class OperationEngineImpl(OperationEngine):
             return f":{key.name}:{dependency_type.__module__}.{dependency_type.__qualname__}"
         return f":{key.name}:{dependency_type!r}"
 
-    def start(self) -> ExecutionPlan[Scope]:
+    def start(self) -> Scope:
         scope = Scope()
         for step in self._dependency_container.application_steps:
-            yield from self._run(step.run((scope,)), DEPENDENCY_EFFECT_TYPES, self._generate_random_effect_id)
+            step.run(scope)
         return scope
 
     def execute[ResultT](
         self,
         command: Command[ResultT],
-        message_id: MessageId | None = None,
+        message_context: MessageContext,
         *,
         application_scope: Scope,
     ) -> ExecutionPlan[ResultT]:
@@ -202,20 +202,30 @@ class OperationEngineImpl(OperationEngine):
         if isinstance(prepared_command.command_def, AtomicCommandDef):
             raise NotImplementedError("Atomic command handlers are not implemented yet")
 
-        if message_id is None:
-            message_id = uuid4().hex
-
-        context = MessageContext(message_id=message_id)
-        scopes = (application_scope, self._dependency_container.make_message_scope(command, context))
+        message_id = message_context.message_id
+        scopes = (application_scope, self._dependency_container.make_message_scope(command, message_context))
         # The length prefix keeps the seeds of different messages apart whatever their ids are.
         message_seed = f"{len(message_id)}:{message_id}"
         for step, seed in zip(prepared_command.handler.steps, prepared_command.seeds, strict=True):
             # Each dependency has its own ids, so adding a dependency does not shift the ids of the handler effects.
-            yield from self._run(step.run(scopes), DEPENDENCY_EFFECT_TYPES, _EffectIdGenerator(message_seed + seed))
+            yield from self._run(
+                effectful=step.run(scopes),
+                allowed_effect_types=DEPENDENCY_EFFECT_TYPES,
+                generate_effect_id=_EffectIdGenerator(message_seed + seed),
+                message_context=message_context,
+                message=command,
+            )
 
         # Effect ids are derived from the message id so that replaying a command reproduces them.
-        effectful = prepared_command.handler.call(scopes)
-        return (yield from self._run(effectful, self._ANY_EFFECT_TYPES, _EffectIdGenerator(message_seed)))
+        return (
+            yield from self._run(
+                effectful=prepared_command.handler.call(scopes),
+                allowed_effect_types=self._ANY_EFFECT_TYPES,
+                generate_effect_id=_EffectIdGenerator(message_seed),
+                message_context=message_context,
+                message=command,
+            )
+        )
 
     def _get_command(self, command_type: type[Command[Any]]) -> _PreparedCommand:
         prepared_command = self._type_to_command.get(command_type)
@@ -229,11 +239,19 @@ class OperationEngineImpl(OperationEngine):
         effectful: Effectful[ResultT, Effect[Any]],
         allowed_effect_types: tuple[type[Effect[Any]], ...],
         generate_effect_id: Callable[[], EffectId],
+        message_context: MessageContext,
+        message: Message[Any],
     ) -> ExecutionPlan[ResultT]:
         try:
             effect = effectful.send(None)
             while True:
-                instruction = cls._make_instruction(effect, allowed_effect_types, generate_effect_id)
+                instruction = cls._make_instruction(
+                    effect=effect,
+                    allowed_effect_types=allowed_effect_types,
+                    generate_effect_id=generate_effect_id,
+                    message_context=message_context,
+                    message=message,
+                )
                 try:
                     effect_result = yield instruction
                 except Exception as exc:  # noqa: BLE001 - the handler decides how to handle the error
@@ -251,13 +269,16 @@ class OperationEngineImpl(OperationEngine):
         effect: Effect[Any],
         allowed_effect_types: tuple[type[Effect[Any]], ...],
         generate_effect_id: Callable[[], EffectId],
+        message_context: MessageContext,
+        message: Message[Any],
     ) -> Instruction[Any]:
         if not isinstance(effect, allowed_effect_types):
             raise UnsupportedEffectError(effect)
         if isinstance(effect, cls._HANDLED_EFFECT_TYPES):
-            return CallEffectHandlerInstruction(context=EffectContext(effect_id=generate_effect_id()), effect=effect)
+            return CallEffectHandlerInstruction(
+                message_context=message_context,
+                message=message,
+                effect_context=EffectContext(effect_id=generate_effect_id()),
+                effect=effect,
+            )
         raise UnsupportedEffectError(effect)
-
-    @classmethod
-    def _generate_random_effect_id(cls) -> EffectId:
-        return uuid4().hex

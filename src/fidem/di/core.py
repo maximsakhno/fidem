@@ -1,11 +1,11 @@
-import inspect
 from abc import ABC
 from collections import defaultdict
 from collections.abc import Callable, Collection, Mapping, MutableMapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 from graphlib import CycleError, TopologicalSorter
-from typing import Any, Final, NamedTuple, Self, get_args, get_origin
+from inspect import Parameter, Signature, signature
+from typing import Any, Final, Self, get_args, get_origin
 
 from fidem.messages import Message, MessageContext
 
@@ -77,11 +77,6 @@ class DependencyLifetimeError(Exception):
         super().__init__(consumer, dependency)
 
 
-class ScopeNotAvailableError(Exception):
-    def __init__(self, lifetime: IntEnum, key: DependencyKey) -> None:
-        super().__init__(lifetime, key)
-
-
 class DependencyResolver[LifetimeT: IntEnum](ABC):
     parameters: Final[Mapping[str, object]]
     """Parameter names mapped to their annotations."""
@@ -115,9 +110,9 @@ class DependencyDef[ResolverT: DependencyResolver[Any], LifetimeT: IntEnum]:
         return DependencyKey(name=self.name, type=dependency_type)
 
 
-def get_signature(function: Callable[..., object]) -> inspect.Signature:
+def get_signature(function: Callable[..., object]) -> Signature:
     try:
-        return inspect.signature(function, eval_str=True)
+        return signature(function, eval_str=True)
     except NameError as exc:
         raise UnresolvedAnnotationError(function) from exc
 
@@ -126,9 +121,9 @@ def get_parameters(function: Callable[..., object]) -> Mapping[str, object]:
     """Returns the annotations of the parameters that dependency injection passes by name."""
     parameters: MutableMapping[str, object] = {}
     for parameter in get_signature(function).parameters.values():
-        if parameter.kind not in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+        if parameter.kind not in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY):
             raise UnsupportedParameterError(function, parameter.name)
-        if parameter.annotation is inspect.Parameter.empty:
+        if parameter.annotation is Parameter.empty:
             raise MissingAnnotationError(function, parameter.name)
         parameters[parameter.name] = parameter.annotation
     return parameters
@@ -136,7 +131,7 @@ def get_parameters(function: Callable[..., object]) -> Mapping[str, object]:
 
 def get_return_type(function: Callable[..., object]) -> object:
     return_type = get_signature(function).return_annotation
-    if return_type is inspect.Signature.empty:
+    if return_type is Signature.empty:
         raise MissingAnnotationError(function, "return")
     return return_type
 
@@ -157,15 +152,8 @@ class Scope:
         self._dependencies[key] = dependency
 
 
-type Scopes = Sequence[Scope | None]
-"""Scopes indexed by lifetime, `None` for a scope that does not exist, like the message scope on start."""
-
-
-def get_scope[ScopeT: Scope](scopes: Sequence[ScopeT | None], lifetime: IntEnum, key: DependencyKey) -> ScopeT:
-    scope = scopes[lifetime]
-    if scope is None:
-        raise ScopeNotAvailableError(lifetime, key)
-    return scope
+type Scopes = Sequence[Scope]
+"""Scopes indexed by lifetime."""
 
 
 def put_message(scope: Scope, message: Message[Any], message_context: MessageContext) -> None:
@@ -183,7 +171,7 @@ class DependencyArgument:
     """The type to check at runtime when the dependency type is known only then."""
 
     def get(self, scopes: Scopes) -> object:
-        dependency = get_scope(scopes, self.lifetime, self.key).get(self.key)
+        dependency = scopes[self.lifetime].get(self.key)
         if self.required_type is not None and not isinstance(dependency, self.required_type):
             raise DependencyNotFoundError(self.consumer, self.parameter, self.required_type)
         return dependency
@@ -204,7 +192,8 @@ class Node:
 type _Index = Mapping[object, Sequence[Node]]
 
 
-class BoundDependencyDef[DependencyDefT](NamedTuple):
+@dataclass(frozen=True, slots=True)
+class BoundDependencyDef[DependencyDefT]:
     dependency_def: DependencyDefT
     arguments: Sequence[DependencyArgument]
 
@@ -228,7 +217,8 @@ class ResolutionStep[ResolverT: DependencyResolver[Any]]:
         )
 
 
-class Binding[DependencyDefT](NamedTuple):
+@dataclass(frozen=True, slots=True)
+class Binding[DependencyDefT]:
     arguments: Sequence[DependencyArgument]
     dependency_defs: Sequence[BoundDependencyDef[DependencyDefT]]
     """Dependencies the consumer needs besides the application ones, each one after its dependencies."""
