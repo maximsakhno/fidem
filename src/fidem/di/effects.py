@@ -1,6 +1,5 @@
-import asyncio
-import inspect
 from abc import ABC, abstractmethod
+from asyncio import Event, Lock, TaskGroup, gather
 from collections import defaultdict
 from collections.abc import (
     AsyncGenerator,
@@ -16,6 +15,7 @@ from collections.abc import (
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from enum import IntEnum
+from inspect import isasyncgenfunction, iscoroutinefunction
 from types import TracebackType
 from typing import Any, ClassVar, Final, Self, get_args, get_origin, override
 
@@ -35,7 +35,6 @@ from fidem.di.core import (
     get_arguments,
     get_parameters,
     get_return_type,
-    get_scope,
     put_message,
 )
 from fidem.effects import Effect, EffectContext
@@ -117,7 +116,7 @@ class InstanceEffectDependencyResolver[DependencyT](EffectDependencyResolver[Dep
 
 class AsyncFunctionEffectDependencyResolver[DependencyT](EffectDependencyResolver[DependencyT]):
     def __init__(self, function: Callable[..., Awaitable[DependencyT]]) -> None:
-        if not inspect.iscoroutinefunction(function):
+        if not iscoroutinefunction(function):
             raise UnsupportedFunctionError(function)
         super().__init__(parameters=get_parameters(function), dependency_type=get_return_type(function))
         self._function: Callable[..., Awaitable[DependencyT]] = function
@@ -131,7 +130,7 @@ class AsyncGeneratorFunctionEffectDependencyResolver[DependencyT](EffectDependen
     _GENERATOR_TYPES: ClassVar[Collection[object]] = (AsyncGenerator, AsyncIterator)
 
     def __init__(self, function: Callable[..., AsyncIterator[DependencyT]]) -> None:
-        if not inspect.isasyncgenfunction(function):
+        if not isasyncgenfunction(function):
             raise UnsupportedFunctionError(function)
         super().__init__(parameters=get_parameters(function), dependency_type=self._get_yield_type(function))
         self._context_manager_factory: Callable[..., AbstractAsyncContextManager[DependencyT]] = asynccontextmanager(
@@ -157,12 +156,19 @@ class EffectDependencyDef[DependencyT](DependencyDef[EffectDependencyResolver[De
     lifetime: EffectDependencyLifetime = EffectDependencyLifetime.APPLICATION
 
 
+class ScopeClosedError(Exception):
+    def __init__(self, key: DependencyKey) -> None:
+        super().__init__(key)
+
+
 class ClosableScope(Scope):
     """Scope that closes its dependencies on exit."""
 
     def __init__(self) -> None:
         super().__init__()
         self._guards: MutableMapping[DependencyKey, DependencyGuard[object]] = {}
+        self._is_closed: bool = False
+        self._lock: Lock | None = None
 
     async def __aenter__(self) -> Self:
         return self
@@ -180,12 +186,25 @@ class ClosableScope(Scope):
         """Guards in the order the dependencies were resolved."""
         return self._guards
 
-    def add(self, key: DependencyKey, guard: DependencyGuard[object]) -> None:
+    @property
+    def lock(self) -> Lock:
+        """Serializes lazy resolution, created on first use because most scopes never need it."""
+        if self._lock is None:
+            self._lock = Lock()
+        return self._lock
+
+    async def add(self, key: DependencyKey, guard: DependencyGuard[object]) -> None:
+        if self._is_closed:
+            # Nobody would close a dependency resolved after its scope had been closed.
+            error = ScopeClosedError(key)
+            await guard.close(error)
+            raise error
         self.set(key, guard.dependency)
         self._guards[key] = guard
 
     async def close(self, exc: BaseException | None) -> None:
         """Closes the dependencies in the reverse order and raises the closing errors."""
+        self._is_closed = True
         if self._guards:
             errors: MutableSequence[BaseException] = []
             for guard in reversed(tuple(self._guards.values())):
@@ -197,8 +216,8 @@ class ClosableScope(Scope):
             raise_close_errors(exc, errors)
 
 
-type ClosableScopes = Sequence[ClosableScope | None]
-"""Scopes indexed by lifetime, `None` for a scope that does not exist."""
+type ClosableScopes = Sequence[ClosableScope]
+"""Scopes indexed by lifetime."""
 
 
 def raise_close_errors(exc: BaseException | None, errors: Sequence[BaseException]) -> None:
@@ -216,12 +235,21 @@ def raise_close_errors(exc: BaseException | None, errors: Sequence[BaseException
 
 @dataclass(slots=True, frozen=True)
 class EffectResolutionStep(ResolutionStep[EffectDependencyResolver[Any]]):
+    # Middlewares may run the handler concurrently, so the first call resolves a message dependency for all of them.
+    _LAZY_LIFETIMES: ClassVar[Collection[IntEnum]] = (EffectDependencyLifetime.MESSAGE,)
+
     async def run(self, scopes: ClosableScopes) -> None:
-        scope = get_scope(scopes, self.lifetime, self.key)
-        # A message dependency is resolved by the first effect that needs it.
-        if self.key not in scope:
-            guard = await self.resolver.resolve(get_arguments(self.arguments, scopes))
-            scope.add(self.key, guard)
+        scope = scopes[self.lifetime]
+        if self.lifetime in self._LAZY_LIFETIMES:
+            async with scope.lock:
+                if self.key not in scope:
+                    await self._resolve(scope, scopes)
+        else:
+            await self._resolve(scope, scopes)
+
+    async def _resolve(self, scope: ClosableScope, scopes: ClosableScopes) -> None:
+        guard = await self.resolver.resolve(get_arguments(self.arguments, scopes))
+        await scope.add(self.key, guard)
 
 
 @dataclass(slots=True, frozen=True)
@@ -274,7 +302,7 @@ class EffectDependencyContainer:
         effect_type: type[Effect[Any]],
         handler: Callable[..., Awaitable[object]],
     ) -> PreparedEffectHandler:
-        if not inspect.iscoroutinefunction(handler):
+        if not iscoroutinefunction(handler):
             raise UnsupportedFunctionError(handler)
         binding = self._graph.bind(handler, get_parameters(handler), effect_type)
         return PreparedEffectHandler(
@@ -301,9 +329,9 @@ class EffectDependencyContainer:
     async def start(self) -> ClosableScope:
         """Resolves application dependencies, each one as soon as its dependencies are resolved."""
         scope = ClosableScope()
-        events = {key: asyncio.Event() for key in self._application_steps}
+        events = {key: Event() for key in self._application_steps}
         try:
-            async with asyncio.TaskGroup() as task_group:
+            async with TaskGroup() as task_group:
                 for key, step in self._application_steps.items():
                     task_group.create_task(
                         self._start_dependency(
@@ -323,8 +351,8 @@ class EffectDependencyContainer:
         cls,
         step: EffectResolutionStep,
         scopes: ClosableScopes,
-        dependency_events: Collection[asyncio.Event],
-        event: asyncio.Event,
+        dependency_events: Collection[Event],
+        event: Event,
     ) -> None:
         for dependency_event in dependency_events:
             await dependency_event.wait()
@@ -338,7 +366,7 @@ class EffectDependencyContainer:
         for key in guards:
             for dependency_key in self._graph.graph[key]:
                 dependents[dependency_key].append(key)
-        events = {key: asyncio.Event() for key in guards}
+        events = {key: Event() for key in guards}
         errors: MutableSequence[BaseException] = []
 
         async def close(key: DependencyKey) -> None:
@@ -351,5 +379,5 @@ class EffectDependencyContainer:
             finally:
                 events[key].set()
 
-        await asyncio.gather(*(close(key) for key in guards))
+        await gather(*(close(key) for key in guards))
         raise_close_errors(exc, errors)

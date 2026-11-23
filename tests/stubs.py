@@ -7,6 +7,7 @@ from fidem.di.messages import (
     GeneratorFunctionMessageDependencyResolver,
     MessageDependencyDef,
     MessageDependencyLifetime,
+    MessageDependencyResolver,
 )
 from fidem.testing import RaiseStep, YeildStep
 
@@ -32,10 +33,11 @@ class GeneratorFunctionStub:
 
 
 def make_message_dependency_def(factory: Callable[..., Any]) -> MessageDependencyDef[Any]:
-    return MessageDependencyDef(
-        resolver=GeneratorFunctionMessageDependencyResolver(factory),
-        lifetime=MessageDependencyLifetime.MESSAGE,
-    )
+    return MessageDependencyDef(GeneratorFunctionMessageDependencyResolver(factory))
+
+
+def make_application_dependency_def(resolver: MessageDependencyResolver[Any]) -> MessageDependencyDef[Any]:
+    return MessageDependencyDef(resolver=resolver, lifetime=MessageDependencyLifetime.APPLICATION)
 
 
 def run[ResultT](generator: Generator[Any, Any, ResultT]) -> ResultT:

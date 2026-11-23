@@ -1,5 +1,5 @@
-import asyncio
 from abc import ABC, abstractmethod
+from asyncio import run
 from collections.abc import AsyncGenerator, MutableMapping
 from dataclasses import dataclass, replace
 from typing import Any
@@ -182,4 +182,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run(main())

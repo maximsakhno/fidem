@@ -1,15 +1,16 @@
-import asyncio
+from asyncio import run
 from collections.abc import MutableMapping
 from dataclasses import dataclass, replace
 from typing import Any
 
 from fidem.di.messages import (
     DependencyEffect,
+    FunctionMessageDependencyResolver,
     GeneratorFunctionMessageDependencyResolver,
     MessageDependencyDef,
     MessageDependencyLifetime,
 )
-from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, Effectful, InternalEffect
+from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, Effectful
 from fidem.environment import EffectDef, EnvironmentImpl
 from fidem.messages import Command
 from fidem.operation_engine import OperationEngineImpl, StagedCommandDef
@@ -31,6 +32,8 @@ class PermissionDeniedError(Exception):
     pass
 
 
+TOKEN_SECRET = "secret"
+
 USERS: MutableMapping[str, User] = {
     "u1": User(id="u1", name="Alice", is_admin=True),
     "u2": User(id="u2", name="Bob", is_admin=False),
@@ -39,11 +42,6 @@ USERS: MutableMapping[str, User] = {
 
 # ── Effects ───────────────────────────────────────────────
 @dataclass(frozen=True, slots=True)
-class GetTokenSecretEffect(InternalEffect[str]):
-    pass
-
-
-@dataclass(frozen=True, slots=True)
 class GetUserEffect(DatabaseReadEffect[User]):
     user_id: str
 
@@ -51,11 +49,6 @@ class GetUserEffect(DatabaseReadEffect[User]):
 @dataclass(frozen=True, slots=True)
 class SaveUserEffect(DatabaseWriteEffect[User]):
     user: User
-
-
-async def handle_get_token_secret(effect: GetTokenSecretEffect) -> str:
-    print("[config] reading the token secret")
-    return "secret"
 
 
 async def handle_get_user(effect: GetUserEffect) -> User:
@@ -101,9 +94,10 @@ class Admin:
     user: User
 
 
-# Created once on start, its effects run before any message.
-def token_verifier() -> Effectful[TokenVerifier, DependencyEffect]:
-    return TokenVerifier((yield from GetTokenSecretEffect()))
+# Created once on start, before any message, so it cannot yield effects.
+def token_verifier() -> TokenVerifier:
+    print("[start] creating the token verifier")
+    return TokenVerifier(TOKEN_SECRET)
 
 
 # The factory gets the command by its base class, so it serves every authenticated command.
@@ -134,19 +128,15 @@ async def main() -> None:
         operation_engine=OperationEngineImpl(
             command_defs=[StagedCommandDef("rename_user", RenameUserCommand, rename_user)],
             dependency_defs=[
-                MessageDependencyDef(GeneratorFunctionMessageDependencyResolver(token_verifier)),
                 MessageDependencyDef(
-                    resolver=GeneratorFunctionMessageDependencyResolver(current_user),
-                    lifetime=MessageDependencyLifetime.MESSAGE,
+                    resolver=FunctionMessageDependencyResolver(token_verifier),
+                    lifetime=MessageDependencyLifetime.APPLICATION,
                 ),
-                MessageDependencyDef(
-                    resolver=GeneratorFunctionMessageDependencyResolver(admin),
-                    lifetime=MessageDependencyLifetime.MESSAGE,
-                ),
+                MessageDependencyDef(GeneratorFunctionMessageDependencyResolver(current_user)),
+                MessageDependencyDef(GeneratorFunctionMessageDependencyResolver(admin)),
             ],
         ),
         effect_defs=[
-            EffectDef(GetTokenSecretEffect, handle_get_token_secret),
             EffectDef(GetUserEffect, handle_get_user),
             EffectDef(SaveUserEffect, handle_save_user),
         ],
@@ -172,4 +162,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run(main())

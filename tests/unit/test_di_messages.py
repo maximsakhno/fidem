@@ -1,5 +1,5 @@
-from collections.abc import Generator, MutableSequence, Sequence
-from typing import Any
+from collections.abc import AsyncGenerator, Callable, Generator, Mapping, MutableSequence, Sequence
+from typing import Any, override
 
 import pytest
 
@@ -17,11 +17,13 @@ from fidem.di.core import (
 )
 from fidem.di.messages import (
     DependencyEffect,
+    FunctionMessageDependencyResolver,
     GeneratorFunctionMessageDependencyResolver,
     InstanceMessageDependencyResolver,
     MessageDependencyContainer,
     MessageDependencyDef,
     MessageDependencyLifetime,
+    MessageDependencyResolver,
     PreparedMessageHandler,
 )
 from fidem.effects import Effect, Effectful
@@ -29,7 +31,7 @@ from fidem.messages import Command, Message, MessageContext
 from fidem.testing import YeildStep, assert_generator
 from tests.effects import TestExternalReadEffect
 from tests.messages import TestCommand
-from tests.stubs import make_message_dependency_def, run
+from tests.stubs import make_application_dependency_def, make_message_dependency_def, run
 
 
 class Service:
@@ -44,6 +46,19 @@ class OtherCommand(Command[str]):
     pass
 
 
+def make_generator_service() -> Effectful[Service, DependencyEffect]:
+    yield from ()
+    return Service()
+
+
+async def make_async_service() -> Service:
+    return Service()
+
+
+async def make_async_generator_service() -> AsyncGenerator[Service]:
+    yield Service()
+
+
 class TestInstanceMessageDependencyResolver:
     def test_resolves_instance_without_effects(self) -> None:
         service = Service()
@@ -53,16 +68,62 @@ class TestInstanceMessageDependencyResolver:
         assert resolver.dependency_type is Service
         assert resolver.parameters == {}
 
-    def test_raises_unsupported_lifetime_error_when_lifetime_is_not_application(self) -> None:
-        dependency_def = MessageDependencyDef(
-            resolver=InstanceMessageDependencyResolver(Service()),
-            lifetime=MessageDependencyLifetime.MESSAGE,
-        )
+    def test_supports_all_lifetimes(self) -> None:
+        resolver = InstanceMessageDependencyResolver(Service())
 
-        with pytest.raises(UnsupportedLifetimeError) as exc_info:
-            MessageDependencyContainer(dependency_defs=[dependency_def])
+        assert tuple(resolver.lifetimes) == tuple(MessageDependencyLifetime)
 
-        assert exc_info.value.args == (dependency_def,)
+
+class TestFunctionMessageDependencyResolver:
+    def test_resolves_function_result_with_arguments_without_effects(self) -> None:
+        def service(other: OtherService) -> Service:
+            calls.append(other)
+            return result
+
+        calls: MutableSequence[OtherService] = []
+        result = Service()
+        other = OtherService()
+        resolver = FunctionMessageDependencyResolver(service)
+
+        assert_generator(generator=resolver.resolve({"other": other}), return_value=result)
+        assert calls == [other]
+        assert resolver.parameters == {"other": OtherService}
+        assert resolver.dependency_type is Service
+        assert tuple(resolver.lifetimes) == tuple(MessageDependencyLifetime)
+
+    def test_resolves_method_result(self) -> None:
+        class Factory:
+            def service(self) -> Service:
+                return result
+
+        result = Service()
+        resolver = FunctionMessageDependencyResolver(Factory().service)
+
+        assert_generator(generator=resolver.resolve({}), return_value=result)
+
+    @pytest.mark.parametrize(
+        "function",
+        [
+            pytest.param(make_generator_service, id="generator"),
+            pytest.param(make_async_service, id="async"),
+            pytest.param(make_async_generator_service, id="async_generator"),
+            pytest.param(Service, id="class"),
+        ],
+    )
+    def test_raises_unsupported_function_error_when_function_is_not_plain(self, function: Callable[..., Any]) -> None:
+        with pytest.raises(UnsupportedFunctionError) as exc_info:
+            FunctionMessageDependencyResolver(function)
+
+        assert exc_info.value.args == (function,)
+
+    def test_raises_missing_annotation_error_when_return_type_is_not_annotated(self) -> None:
+        def service():
+            return Service()
+
+        with pytest.raises(MissingAnnotationError) as exc_info:
+            FunctionMessageDependencyResolver(service)
+
+        assert exc_info.value.args == (service, "return")
 
 
 class TestGeneratorFunctionMessageDependencyResolver:
@@ -115,13 +176,24 @@ class TestGeneratorFunctionMessageDependencyResolver:
 
         assert exc_info.value.args == (service, "return")
 
+    def test_raises_unsupported_lifetime_error_when_lifetime_is_application(self) -> None:
+        dependency_def = MessageDependencyDef(
+            resolver=GeneratorFunctionMessageDependencyResolver(make_generator_service),
+            lifetime=MessageDependencyLifetime.APPLICATION,
+        )
+
+        with pytest.raises(UnsupportedLifetimeError) as exc_info:
+            MessageDependencyContainer(dependency_defs=[dependency_def])
+
+        assert exc_info.value.args == (dependency_def,)
+
 
 class TestMessageDependencyDef:
-    def test_takes_key_type_from_resolver_and_lifetime_is_application_by_default(self) -> None:
+    def test_takes_key_type_from_resolver_and_lifetime_is_message_by_default(self) -> None:
         dependency_def = MessageDependencyDef(InstanceMessageDependencyResolver(Service()))
 
         assert dependency_def.key == DependencyKey(name="", type=Service)
-        assert dependency_def.lifetime == MessageDependencyLifetime.APPLICATION
+        assert dependency_def.lifetime == MessageDependencyLifetime.MESSAGE
 
 
 class TestMessageHandlerPreparation:
@@ -204,7 +276,7 @@ class TestMessageHandlerPreparation:
             return "command_result"
 
         container = MessageDependencyContainer(
-            dependency_defs=[MessageDependencyDef(InstanceMessageDependencyResolver(Service()))],
+            dependency_defs=[make_application_dependency_def(InstanceMessageDependencyResolver(Service()))],
             message_types=[TestCommand],
         )
 
@@ -222,27 +294,25 @@ class TestMessageHandlerPreparation:
 
 class TestMessageDependencyValidation:
     def test_orders_application_dependencies_topologically(self) -> None:
-        def service(other: OtherService) -> Effectful[Service, DependencyEffect]:
-            yield from ()
+        def service(other: OtherService) -> Service:
             return Service()
 
         container = MessageDependencyContainer(
             dependency_defs=[
-                MessageDependencyDef(GeneratorFunctionMessageDependencyResolver(service)),
-                MessageDependencyDef(InstanceMessageDependencyResolver(OtherService())),
+                make_application_dependency_def(FunctionMessageDependencyResolver(service)),
+                make_application_dependency_def(InstanceMessageDependencyResolver(OtherService())),
             ],
         )
 
         assert [step.key.type for step in container.application_steps] == [OtherService, Service]
 
     def test_raises_dependency_lifetime_error_when_application_dependency_needs_message_context(self) -> None:
-        def service(context: MessageContext) -> Effectful[Service, DependencyEffect]:
-            yield from ()
+        def service(context: MessageContext) -> Service:
             return Service()
 
         with pytest.raises(DependencyLifetimeError) as exc_info:
             MessageDependencyContainer(
-                dependency_defs=[MessageDependencyDef(GeneratorFunctionMessageDependencyResolver(service))],
+                dependency_defs=[make_application_dependency_def(FunctionMessageDependencyResolver(service))],
             )
 
         assert exc_info.value.args == (DependencyKey(name="", type=Service), MESSAGE_CONTEXT_KEY)
@@ -267,6 +337,23 @@ class TestMessageDependencyValidation:
             MessageDependencyContainer(dependency_defs=[dependency_def])
 
         assert exc_info.value.args == (MESSAGE_CONTEXT_KEY,)
+
+    def test_raises_unsupported_lifetime_error_when_effectful_resolver_declares_application_lifetime(self) -> None:
+        class EffectfulResolver(MessageDependencyResolver[Service]):
+            def __init__(self) -> None:
+                super().__init__(parameters={}, dependency_type=Service, lifetimes=tuple(MessageDependencyLifetime))
+
+            @override
+            def resolve(self, arguments: Mapping[str, object]) -> Effectful[Service, DependencyEffect]:
+                yield from ()
+                return Service()
+
+        dependency_def = make_application_dependency_def(EffectfulResolver())
+
+        with pytest.raises(UnsupportedLifetimeError) as exc_info:
+            MessageDependencyContainer(dependency_defs=[dependency_def])
+
+        assert exc_info.value.args == (dependency_def,)
 
 
 MESSAGE = TestCommand()
