@@ -14,10 +14,13 @@ from fidem.operation_engine import (
     CallEffectHandlerInstruction,
     CommandNotDefinedError,
     DuplicateCommandDefError,
+    DuplicateMessageMiddlewareDefError,
     ExecutionMode,
     ExecutionPlan,
     HandledEffect,
+    MessageMiddlewareDef,
     OperationEngineImpl,
+    Proceed,
     StagedCommandDef,
     UnsupportedEffectError,
 )
@@ -79,7 +82,7 @@ class TestExecuteEphemeral:
             return_value="command_result effect_result",
         )
 
-    @pytest.mark.parametrize("effect", [TestControlEffect(), TestEvent(), TestCommand()])
+    @pytest.mark.parametrize("effect", [TestControlEffect(), TestEvent(), TestCommand(), Proceed()])
     def test_raises_unsupported_effect_error_when_handler_yields_unsupported_effect(self, effect: Effect[Any]) -> None:
         def handler() -> Effectful[str, Effect[Any]]:
             yield from effect
@@ -340,7 +343,7 @@ class TestGuards:
 
         assert not is_handler_called
 
-    @pytest.mark.parametrize("effect", [TestDatabaseWriteEffect(), TestControlEffect(), TestCommand()])
+    @pytest.mark.parametrize("effect", [TestDatabaseWriteEffect(), TestControlEffect(), TestCommand(), Proceed()])
     def test_raises_unsupported_effect_error_when_guard_yields_not_guard_effect(
         self,
         effect: Effect[Any],
@@ -422,14 +425,361 @@ class TestGuards:
         assert len(set(effect_ids)) == 4
 
 
+class TestMessageMiddlewares:
+    def test_passes_message_context_and_guard_values_into_middleware_and_returns_its_result(self) -> None:
+        def service() -> Effectful[Service, GuardEffect]:
+            yield from ()
+            return Service()
+
+        def middleware(
+            context: MessageContext,
+            command: TestCommand,
+            service: Service,
+        ) -> Effectful[str, Effect[Any]]:
+            result = yield from Proceed()
+            return f"{context.message_id} {command is message} {type(service).__name__} {result}"
+
+        def handler() -> Effectful[str, Effect[Any]]:
+            yield from ()
+            return "command_result"
+
+        message = TestCommand()
+        engine = make_engine(
+            handler=handler,
+            guard_defs=[GuardDef(service)],
+            middleware_defs=[MessageMiddlewareDef("test", middleware)],
+        )
+
+        assert run(engine.execute(message, MESSAGE_CONTEXT)) == "test_message_id True Service command_result"
+
+    def test_yields_call_effect_handler_instruction_when_middleware_yields_write_effect(self) -> None:
+        def middleware() -> Effectful[object, Effect[Any]]:
+            result = yield from Proceed()
+            yield from effect
+            return result
+
+        def handler() -> Effectful[str, Effect[Any]]:
+            yield from ()
+            return "command_result"
+
+        effect = TestDatabaseWriteEffect()
+        command = TestCommand()
+        engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
+
+        assert_generator(
+            generator=engine.execute(command, MessageContext(message_id="test_message_id")),
+            steps=[YeildStep(make_expected_instruction(effect, command), "effect_result")],
+            return_value="command_result",
+        )
+
+    def test_runs_guards_then_middlewares_from_outer_one_then_handler(self) -> None:
+        def service() -> Effectful[Service, GuardEffect]:
+            events.append("guard")
+            yield from ()
+            return Service()
+
+        def outer() -> Effectful[object, Effect[Any]]:
+            events.append("outer before")
+            result = yield from Proceed()
+            events.append("outer after")
+            return result
+
+        def inner(service: Service) -> Effectful[object, Effect[Any]]:
+            events.append("inner before")
+            result = yield from Proceed()
+            events.append("inner after")
+            return result
+
+        def handler() -> Effectful[str, Effect[Any]]:
+            events.append("handler")
+            yield from ()
+            return "command_result"
+
+        events: MutableSequence[str] = []
+        engine = make_engine(
+            handler=handler,
+            guard_defs=[GuardDef(service)],
+            middleware_defs=[MessageMiddlewareDef("outer", outer), MessageMiddlewareDef("inner", inner)],
+        )
+
+        assert run(engine.execute(TestCommand(), MESSAGE_CONTEXT)) == "command_result"
+        assert events == ["guard", "outer before", "inner before", "handler", "inner after", "outer after"]
+
+    def test_does_not_call_handler_when_middleware_does_not_proceed(self) -> None:
+        def middleware() -> Effectful[str, Effect[Any]]:
+            yield from ()
+            return "cached_result"
+
+        def handler() -> Effectful[str, Effect[Any]]:
+            nonlocal is_handler_called
+            is_handler_called = True
+            yield from ()
+            return "command_result"
+
+        is_handler_called = False
+        engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
+
+        assert run(engine.execute(TestCommand(), MESSAGE_CONTEXT)) == "cached_result"
+        assert not is_handler_called
+
+    def test_runs_inner_part_anew_with_same_effect_ids_on_each_proceed_and_guards_once(self) -> None:
+        def service() -> Effectful[Service, GuardEffect]:
+            events.append("guard")
+            yield from ()
+            return Service()
+
+        def middleware() -> Effectful[object, Effect[Any]]:
+            yield from Proceed()
+            return (yield from Proceed())
+
+        def handler(service: Service) -> Effectful[str, Effect[Any]]:
+            events.append("handler")
+            return (yield from handle_with_three_effects())
+
+        events: MutableSequence[str] = []
+        engine = make_engine(
+            handler=handler,
+            guard_defs=[GuardDef(service)],
+            middleware_defs=[MessageMiddlewareDef("test", middleware)],
+        )
+
+        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+
+        assert events == ["guard", "handler", "handler"]
+        assert effect_ids[:3] == effect_ids[3:]
+
+    def test_does_not_shift_handler_effect_ids_when_middleware_added(self) -> None:
+        handler_effect_ids = collect_effect_ids(
+            make_engine(handle_with_three_effects).execute(TestCommand(), MESSAGE_CONTEXT)
+        )
+        engine = make_engine(
+            handler=handle_with_three_effects,
+            middleware_defs=[MessageMiddlewareDef("test", proceed_with_three_effects)],
+        )
+
+        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+
+        assert effect_ids[3:] == handler_effect_ids
+        assert set(effect_ids[:3]).isdisjoint(handler_effect_ids)
+
+    def test_generates_different_effect_ids_for_middlewares_with_different_names(self) -> None:
+        engine = make_engine(
+            handler=handle_with_three_effects,
+            middleware_defs=[
+                MessageMiddlewareDef("first", proceed_with_three_effects),
+                MessageMiddlewareDef("second", proceed_with_three_effects),
+            ],
+        )
+
+        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+
+        assert len(set(effect_ids)) == 9
+
+    def test_throws_inner_error_into_middleware_at_proceed(self) -> None:
+        def middleware() -> Effectful[str, Effect[Any]]:
+            try:
+                yield from Proceed()
+            except ValueError as exc:
+                return f"caught {exc}"
+            return "unreachable"
+
+        def handler() -> Effectful[str, Effect[Any]]:
+            yield from TestInternalEffect()
+            return "unreachable"
+
+        engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
+        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan.send(None)
+
+        with pytest.raises(StopIteration) as exc_info:
+            execution_plan.throw(ValueError("effect_error"))
+
+        assert exc_info.value.value == "caught effect_error"
+
+    def test_raises_unsupported_effect_error_of_inner_part_without_throwing_it_into_middleware(self) -> None:
+        def middleware() -> Effectful[str, Effect[Any]]:
+            nonlocal is_middleware_closed
+            try:
+                yield from Proceed()
+            except Exception:  # noqa: BLE001 - checks that no error reaches the middleware
+                return "swallowed"
+            finally:
+                is_middleware_closed = True
+            return "unreachable"
+
+        def handler() -> Effectful[str, Effect[Any]]:
+            yield from effect
+            return "unreachable"
+
+        effect = TestControlEffect()
+        is_middleware_closed = False
+        engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
+
+        with pytest.raises(UnsupportedEffectError) as exc_info:
+            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
+
+        assert exc_info.value.args == (effect,)
+        assert is_middleware_closed
+
+    def test_throws_unsupported_effect_error_of_effect_handler_through_handler_into_middleware(self) -> None:
+        def middleware() -> Effectful[str, Effect[Any]]:
+            try:
+                yield from Proceed()
+            except UnsupportedEffectError as exc:
+                return f"caught {exc.args == (effect,)}"
+            return "unreachable"
+
+        def handler() -> Effectful[str, Effect[Any]]:
+            yield from TestInternalEffect()
+            return "unreachable"
+
+        effect = TestControlEffect()
+        engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
+        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan.send(None)
+
+        with pytest.raises(StopIteration) as exc_info:
+            execution_plan.throw(UnsupportedEffectError(effect))
+
+        assert exc_info.value.value == "caught True"
+
+    @pytest.mark.parametrize("effect", [TestControlEffect(), TestEvent(), TestCommand()])
+    def test_raises_unsupported_effect_error_when_middleware_yields_unsupported_effect(
+        self,
+        effect: Effect[Any],
+    ) -> None:
+        def middleware() -> Effectful[str, Effect[Any]]:
+            yield from effect
+            return "unreachable"
+
+        engine = make_engine(handle_with_three_effects, middleware_defs=[MessageMiddlewareDef("test", middleware)])
+
+        with pytest.raises(UnsupportedEffectError) as exc_info:
+            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
+
+        assert exc_info.value.args == (effect,)
+
+    def test_closes_all_generators_of_chain_when_execution_plan_closed(self) -> None:
+        def middleware() -> Effectful[object, Effect[Any]]:
+            try:
+                return (yield from Proceed())
+            finally:
+                events.append("middleware closed")
+
+        def handler() -> Effectful[str, Effect[Any]]:
+            try:
+                yield from TestInternalEffect()
+            finally:
+                events.append("handler closed")
+            return "command_result"
+
+        events: MutableSequence[str] = []
+        engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
+        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan.send(None)
+
+        execution_plan.close()
+
+        assert events == ["handler closed", "middleware closed"]
+
+    @pytest.mark.parametrize(
+        argnames=("command_middleware_defs", "expected_result"),
+        argvalues=[(None, "engine command_result"), ((), "command_result")],
+    )
+    def test_uses_engine_middlewares_unless_command_def_replaces_them(
+        self,
+        command_middleware_defs: Sequence[MessageMiddlewareDef] | None,
+        expected_result: str,
+    ) -> None:
+        def engine_middleware() -> Effectful[str, Effect[Any]]:
+            return f"engine {(yield from Proceed())}"
+
+        engine = make_engine(
+            handler=handle_without_effects,
+            middleware_defs=[MessageMiddlewareDef("engine", engine_middleware)],
+            command_middleware_defs=command_middleware_defs,
+        )
+
+        assert run(engine.execute(TestCommand(), MESSAGE_CONTEXT)) == expected_result
+
+    @pytest.mark.parametrize("is_command_list", [False, True])
+    def test_raises_duplicate_message_middleware_def_error_when_middlewares_have_same_name(
+        self,
+        is_command_list: bool,
+    ) -> None:
+        middleware_defs = [MessageMiddlewareDef("test", proceed), MessageMiddlewareDef("test", proceed)]
+        all_middleware_defs = [*middleware_defs, MessageMiddlewareDef("other", proceed)]
+
+        with pytest.raises(DuplicateMessageMiddlewareDefError) as exc_info:
+            make_engine(
+                handler=handle_without_effects,
+                middleware_defs=() if is_command_list else all_middleware_defs,
+                command_middleware_defs=all_middleware_defs if is_command_list else None,
+            )
+
+        assert exc_info.value.args == (middleware_defs,)
+
+    def test_raises_unsupported_function_error_when_middleware_is_not_generator_function(self) -> None:
+        def middleware() -> str:
+            return "middleware_result"
+
+        with pytest.raises(UnsupportedFunctionError) as exc_info:
+            make_engine(
+                handler=handle_without_effects,
+                middleware_defs=[MessageMiddlewareDef("test", middleware)],  # pyright: ignore[reportArgumentType] - checks a wrong middleware
+            )
+
+        assert exc_info.value.args == (middleware,)
+
+    @pytest.mark.parametrize("command_def_type", [StagedCommandDef, AtomicCommandDef])
+    def test_raises_dependency_not_found_error_when_middleware_parameter_has_no_guard(
+        self,
+        command_def_type: type[StagedCommandDef[Any]] | type[AtomicCommandDef[Any]],
+    ) -> None:
+        def middleware(service: Service) -> Effectful[object, Effect[Any]]:
+            return (yield from Proceed())
+
+        with pytest.raises(DependencyNotFoundError) as exc_info:
+            OperationEngineImpl(
+                command_defs=[command_def_type("test", TestCommand, handle_without_effects)],  # pyright: ignore[reportArgumentType] - the handler is only checked, not run
+                middleware_defs=[MessageMiddlewareDef("test", middleware)],
+            )
+
+        assert exc_info.value.args == (middleware, "service", Service)
+
+
 def make_engine(
     handler: StagedHandler[Any, Any],
     guard_defs: Collection[GuardDef[Any]] = (),
+    middleware_defs: Sequence[MessageMiddlewareDef] = (),
+    command_middleware_defs: Sequence[MessageMiddlewareDef] | None = None,
 ) -> OperationEngineImpl:
     return OperationEngineImpl(
-        command_defs=[StagedCommandDef("test", TestCommand, handler)],
+        command_defs=[
+            StagedCommandDef(
+                name="test",
+                message_type=TestCommand,
+                handler=handler,
+                middleware_defs=command_middleware_defs,
+            ),
+        ],
         guard_defs=guard_defs,
+        middleware_defs=middleware_defs,
     )
+
+
+def proceed() -> Effectful[object, Effect[Any]]:
+    return (yield from Proceed())
+
+
+def proceed_with_three_effects() -> Effectful[object, Effect[Any]]:
+    yield from handle_with_three_effects()
+    return (yield from Proceed())
+
+
+def handle_without_effects() -> Effectful[str, Effect[Any]]:
+    yield from ()
+    return "command_result"
 
 
 def handle_with_three_effects() -> Effectful[str, Effect[Any]]:
