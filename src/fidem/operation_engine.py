@@ -6,7 +6,7 @@ from enum import Enum, auto
 from random import Random
 from typing import Any, Final
 
-from fidem.di.core import DependencyKey
+from fidem.di.core import DependencyKey, make_message_dependencies
 from fidem.effects import (
     DatabaseEffect,
     Effect,
@@ -158,7 +158,7 @@ class OperationEngineImpl(OperationEngine):
         return _PreparedCommand(
             command_def=command_def,
             handler=handler,
-            seeds=tuple(self._make_seed(step.key) for step in handler.steps),
+            seeds=tuple(self._make_seed(step.provider.key) for step in handler.steps),
         )
 
     @classmethod
@@ -183,13 +183,13 @@ class OperationEngineImpl(OperationEngine):
             raise NotImplementedError("Atomic command handlers are not implemented yet")
 
         message_id = message_context.message_id
-        scope = self._guard_container.make_message_scope(command, message_context)
+        values = make_message_dependencies(command, message_context)
         # The length prefix keeps the seeds of different messages apart whatever their ids are.
         message_seed = f"{len(message_id)}:{message_id}"
         for step, seed in zip(prepared_command.handler.steps, prepared_command.seeds, strict=True):
             # Each guard has its own ids, so adding a guard does not shift the ids of the handler effects.
             yield from self._run(
-                effectful=step.run(scope),
+                effectful=step.run(values),
                 allowed_effect_types=GUARD_EFFECT_TYPES,
                 generate_effect_id=_EffectIdGenerator(message_seed + seed),
                 message_context=message_context,
@@ -199,7 +199,7 @@ class OperationEngineImpl(OperationEngine):
         # Effect ids are derived from the message id so that replaying a command reproduces them.
         return (
             yield from self._run(
-                effectful=prepared_command.handler.call(scope),
+                effectful=prepared_command.handler.call(values),
                 allowed_effect_types=self._ANY_EFFECT_TYPES,
                 generate_effect_id=_EffectIdGenerator(message_seed),
                 message_context=message_context,

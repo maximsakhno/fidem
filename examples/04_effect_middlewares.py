@@ -5,11 +5,7 @@ from itertools import count
 from time import perf_counter
 from typing import Any
 
-from fidem.di.effects import (
-    AsyncGeneratorFunctionEffectDependencyResolver,
-    EffectDependencyDef,
-    EffectDependencyLifetime,
-)
+from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
 from fidem.effects import Effect, Effectful, ExternalReadEffect, InternalEffect
 from fidem.environment import CallNext, EffectCall, EffectDef, EffectMiddlewareDef, EnvironmentImpl
 from fidem.messages import Command
@@ -108,9 +104,7 @@ async def main() -> None:
             EffectDef(GetRateEffect, handle_get_rate, middleware_defs=[LOG, make_retry(attempts=3)]),
         ],
         dependency_defs=[
-            EffectDependencyDef(
-                AsyncGeneratorFunctionEffectDependencyResolver(connection), lifetime=EffectDependencyLifetime.EFFECT
-            ),
+            EffectDependencyDef(connection, lifetime=EffectDependencyLifetime.EFFECT),
         ],
         effect_middleware_defs=[LOG],
     )

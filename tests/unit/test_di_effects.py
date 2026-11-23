@@ -11,28 +11,24 @@ from fidem.di.core import (
     AmbiguousDependencyError,
     DependencyCycleError,
     DependencyKey,
-    DependencyLifetimeError,
     DependencyNotFoundError,
     DuplicateDependencyError,
     MissingAnnotationError,
     UnresolvedAnnotationError,
     UnsupportedFunctionError,
-    UnsupportedLifetimeError,
     UnsupportedParameterError,
     UnsupportedReturnTypeError,
 )
 from fidem.di.effects import (
     EFFECT_CONTEXT_KEY,
     EFFECT_KEY,
-    AsyncFunctionEffectDependencyResolver,
-    AsyncGeneratorFunctionEffectDependencyResolver,
-    ClosableScope,
-    DependencyGuard,
+    DependencyFactory,
+    DependencyLifetimeError,
     EffectDependencyContainer,
     EffectDependencyDef,
     EffectDependencyLifetime,
-    InstanceEffectDependencyResolver,
-    ValueDependencyGuard,
+    EffectProvider,
+    Scope,
 )
 from fidem.effects import Effect, EffectContext
 from fidem.messages import Event, Message, MessageContext
@@ -61,12 +57,6 @@ class Generic[T]:
 
 
 @dataclass(frozen=True, slots=True)
-class ServiceCall:
-    other: OtherService
-    base: BaseService
-
-
-@dataclass(frozen=True, slots=True)
 class BuiltinDependencies:
     message: Message[Any]
     message_context: MessageContext
@@ -74,96 +64,37 @@ class BuiltinDependencies:
     effect_context: EffectContext
 
 
-class TestInstanceDependencyResolver:
-    async def test_resolves_instance(self) -> None:
-        service = Service()
-        resolver = InstanceEffectDependencyResolver(service)
-
-        guard = await resolver.resolve({})
-
-        assert guard.dependency is service
-        assert resolver.dependency_type is Service
-        assert resolver.parameters == {}
+async def make_service() -> AsyncGenerator[Service]:
+    yield Service()
 
 
-class TestAsyncFunctionDependencyResolver:
-    async def test_resolves_function_result_with_arguments(self) -> None:
-        async def service(other: OtherService, *, base: BaseService) -> Service:
-            calls.append(ServiceCall(other=other, base=base))
-            return result
-
-        calls: MutableSequence[ServiceCall] = []
-        result = Service()
-        other = OtherService()
-        base = BaseService()
-        resolver = AsyncFunctionEffectDependencyResolver(service)
-
-        guard = await resolver.resolve({"other": other, "base": base})
-
-        assert guard.dependency is result
-        assert calls == [ServiceCall(other=other, base=base)]
-        assert resolver.parameters == {"other": OtherService, "base": BaseService}
-        assert resolver.dependency_type is Service
-
-    def test_raises_unsupported_function_error_when_function_is_not_async(self) -> None:
-        def service() -> Service:
-            return Service()
-
-        with pytest.raises(UnsupportedFunctionError):
-            AsyncFunctionEffectDependencyResolver(service)  # pyright: ignore[reportArgumentType] - checks a wrong function
-
-    def test_raises_missing_annotation_error_when_return_type_is_not_annotated(self) -> None:
-        async def service():
-            return Service()
-
-        with pytest.raises(MissingAnnotationError) as exc_info:
-            AsyncFunctionEffectDependencyResolver(service)
-
-        assert exc_info.value.args == (service, "return")
-
-    def test_raises_missing_annotation_error_when_parameter_is_not_annotated(self) -> None:
-        async def service(other) -> Service:  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType] - checks a missing annotation
-            return Service()
-
-        with pytest.raises(MissingAnnotationError) as exc_info:
-            AsyncFunctionEffectDependencyResolver(service)
-
-        assert exc_info.value.args == (service, "other")
-
-    def test_raises_unresolved_annotation_error_when_annotation_refers_to_unknown_name(self) -> None:
-        async def service(other: "UnknownService") -> Service:  # noqa: F821 # pyright: ignore[reportUndefinedVariable, reportUnknownParameterType] - checks an unresolved annotation
-            return Service()
-
-        with pytest.raises(UnresolvedAnnotationError) as exc_info:
-            AsyncFunctionEffectDependencyResolver(service)
-
-        assert exc_info.value.args == (service,)
-
-    @pytest.mark.parametrize("parameter", ["args", "kwargs", "positional"])
-    def test_raises_unsupported_parameter_error_when_parameter_is_not_passed_by_name(self, parameter: str) -> None:
-        async def with_args(*args: OtherService) -> Service:
-            return Service()
-
-        async def with_kwargs(**kwargs: OtherService) -> Service:
-            return Service()
-
-        async def with_positional(positional: OtherService, /) -> Service:
-            return Service()
-
-        functions: dict[str, Callable[..., Awaitable[Service]]] = {
-            "args": with_args,
-            "kwargs": with_kwargs,
-            "positional": with_positional,
-        }
-
-        with pytest.raises(UnsupportedParameterError) as exc_info:
-            AsyncFunctionEffectDependencyResolver(functions[parameter])
-
-        assert exc_info.value.args == (functions[parameter], parameter)
+async def make_other_service() -> AsyncGenerator[OtherService]:
+    yield OtherService()
 
 
-class TestAsyncGeneratorFunctionDependencyResolver:
-    async def test_resolves_first_yielded_value_and_finishes_generator_on_close(self) -> None:
+class TestEffectProvider:
+    def test_takes_parameters_and_key_from_factory(self) -> None:
+        async def service(other: OtherService, *, base: BaseService) -> AsyncGenerator[Service]:
+            yield Service()
+
+        provider = EffectProvider.make(EffectDependencyDef(service, lifetime=EffectDependencyLifetime.MESSAGE))
+
+        assert provider.parameters == {"other": OtherService, "base": BaseService}
+        assert provider.key == DependencyKey(name="", type=Service)
+        assert provider.lifetime == EffectDependencyLifetime.MESSAGE
+
+    def test_takes_key_type_and_name_from_dependency_def_when_set(self) -> None:
+        provider = EffectProvider.make(EffectDependencyDef(make_service, name="service", type=BaseService))
+
+        assert provider.key == DependencyKey(name="service", type=BaseService)
+
+    def test_takes_dependency_type_from_async_iterator_item_type(self) -> None:
+        async def service() -> AsyncIterator[Service]:
+            yield Service()
+
+        assert EffectProvider.make(EffectDependencyDef(service)).key.type is Service
+
+    async def test_enters_factory_up_to_yield_and_finishes_it_on_exit(self) -> None:
         async def service(other: OtherService) -> AsyncGenerator[Service]:
             events.append("start")
             yield result
@@ -171,101 +102,101 @@ class TestAsyncGeneratorFunctionDependencyResolver:
 
         events: MutableSequence[str] = []
         result = Service()
-        resolver = AsyncGeneratorFunctionEffectDependencyResolver(service)
+        context_manager = EffectProvider.make(EffectDependencyDef(service)).factory(other=OtherService())
 
-        guard = await resolver.resolve({"other": OtherService()})
-        events_after_resolve = list(events)
-        await guard.close(None)
+        dependency = await context_manager.__aenter__()
+        events_after_enter = list(events)
+        await context_manager.__aexit__(None, None, None)
 
-        assert guard.dependency is result
-        assert events_after_resolve == ["start"]
+        assert dependency is result
+        assert events_after_enter == ["start"]
         assert events == ["start", "stop"]
-        assert resolver.parameters == {"other": OtherService}
-
-    async def test_throws_error_into_generator_on_close(self) -> None:
-        async def service() -> AsyncGenerator[Service]:
-            try:
-                yield Service()
-            except ValueError as exc:
-                errors.append(exc)
-                raise
-
-        errors: MutableSequence[Exception] = []
-        error = ValueError("error")
-        guard = await AsyncGeneratorFunctionEffectDependencyResolver(service).resolve({})
-
-        await guard.close(error)
-
-        assert errors == [error]
-
-    async def test_does_not_raise_when_generator_suppresses_error(self) -> None:
-        async def service() -> AsyncGenerator[Service]:
-            with suppress(ValueError):
-                yield Service()
-
-        guard = await AsyncGeneratorFunctionEffectDependencyResolver(service).resolve({})
-
-        await guard.close(ValueError("error"))
-
-    async def test_raises_runtime_error_when_generator_yields_twice(self) -> None:
-        async def service() -> AsyncGenerator[Service]:
-            yield Service()
-            yield Service()
-
-        guard = await AsyncGeneratorFunctionEffectDependencyResolver(service).resolve({})
-
-        with pytest.raises(RuntimeError):
-            await guard.close(None)
-
-    def test_takes_dependency_type_from_async_generator_yield_type(self) -> None:
-        async def service() -> AsyncGenerator[Service]:
-            yield Service()
-
-        assert AsyncGeneratorFunctionEffectDependencyResolver(service).dependency_type is Service
-
-    def test_takes_dependency_type_from_async_iterator_item_type(self) -> None:
-        async def service() -> AsyncIterator[Service]:
-            yield Service()
-
-        assert AsyncGeneratorFunctionEffectDependencyResolver(service).dependency_type is Service
 
     def test_raises_unsupported_return_type_error_when_return_type_is_not_async_generator(self) -> None:
         async def service() -> Service:  # pyright: ignore[reportInvalidTypeForm] - checks a wrong annotation
             yield Service()  # pyright: ignore[reportReturnType] - checks a wrong annotation
 
         with pytest.raises(UnsupportedReturnTypeError) as exc_info:
-            AsyncGeneratorFunctionEffectDependencyResolver(service)  # pyright: ignore[reportArgumentType] - checks a wrong annotation
+            EffectProvider.make(EffectDependencyDef(service))  # pyright: ignore[reportArgumentType] - checks a wrong annotation
 
         assert exc_info.value.args == (service, Service)
 
-    def test_raises_unsupported_function_error_when_function_is_not_async_generator(self) -> None:
+    def test_raises_unsupported_function_error_when_factory_is_async_function(self) -> None:
         async def service() -> Service:
             return Service()
 
-        with pytest.raises(UnsupportedFunctionError):
-            AsyncGeneratorFunctionEffectDependencyResolver(service)  # pyright: ignore[reportArgumentType] - checks a wrong function
+        with pytest.raises(UnsupportedFunctionError) as exc_info:
+            EffectProvider.make(EffectDependencyDef(service))  # pyright: ignore[reportArgumentType] - checks a wrong factory
 
+        assert exc_info.value.args == (service,)
 
-class TestEffectDependencyDef:
-    def test_takes_key_type_from_resolver_and_name_is_empty_by_default(self) -> None:
-        dependency_def = EffectDependencyDef(InstanceEffectDependencyResolver(Service()))
+    def test_raises_unsupported_function_error_when_factory_is_plain_function(self) -> None:
+        def service() -> Service:
+            return Service()
 
-        assert dependency_def.key == DependencyKey(name="", type=Service)
+        with pytest.raises(UnsupportedFunctionError) as exc_info:
+            EffectProvider.make(EffectDependencyDef(service))  # pyright: ignore[reportArgumentType] - checks a wrong factory
 
-    def test_takes_key_type_and_name_from_dependency_when_set(self) -> None:
-        dependency_def = EffectDependencyDef(
-            InstanceEffectDependencyResolver(Service()), name="service", type=BaseService
-        )
+        assert exc_info.value.args == (service,)
 
-        assert dependency_def.key == DependencyKey(name="service", type=BaseService)
+    def test_raises_missing_annotation_error_when_return_type_is_not_annotated(self) -> None:
+        async def service():
+            yield Service()
+
+        with pytest.raises(MissingAnnotationError) as exc_info:
+            EffectProvider.make(EffectDependencyDef(service))
+
+        assert exc_info.value.args == (service, "return")
+
+    def test_raises_missing_annotation_error_when_parameter_is_not_annotated(self) -> None:
+        async def service(other) -> AsyncGenerator[Service]:  # pyright: ignore[reportMissingParameterType, reportUnknownParameterType] - checks a missing annotation
+            yield Service()
+
+        with pytest.raises(MissingAnnotationError) as exc_info:
+            EffectProvider.make(EffectDependencyDef(service))
+
+        assert exc_info.value.args == (service, "other")
+
+    def test_raises_unresolved_annotation_error_when_annotation_refers_to_unknown_name(self) -> None:
+        async def service(other: "UnknownService") -> AsyncGenerator[Service]:  # noqa: F821 # pyright: ignore[reportUndefinedVariable, reportUnknownParameterType] - checks an unresolved annotation
+            yield Service()
+
+        with pytest.raises(UnresolvedAnnotationError) as exc_info:
+            EffectProvider.make(EffectDependencyDef(service))
+
+        assert exc_info.value.args == (service,)
+
+    @pytest.mark.parametrize("parameter", ["args", "kwargs", "positional"])
+    def test_raises_unsupported_parameter_error_when_parameter_is_not_passed_by_name(self, parameter: str) -> None:
+        async def with_args(*args: OtherService) -> AsyncGenerator[Service]:
+            yield Service()
+
+        async def with_kwargs(**kwargs: OtherService) -> AsyncGenerator[Service]:
+            yield Service()
+
+        async def with_positional(positional: OtherService, /) -> AsyncGenerator[Service]:
+            yield Service()
+
+        factories: dict[str, DependencyFactory[Service]] = {
+            "args": with_args,
+            "kwargs": with_kwargs,
+            "positional": with_positional,
+        }
+
+        with pytest.raises(UnsupportedParameterError) as exc_info:
+            EffectProvider.make(EffectDependencyDef(factories[parameter]))
+
+        assert exc_info.value.args == (factories[parameter], parameter)
 
 
 class TestScope:
     async def test_closes_dependencies_in_reverse_order(self) -> None:
         events: MutableSequence[str] = []
-        scope = ClosableScope()
-        await scope.add(DependencyKey(name="first", type=Service), await make_recording_guard(events, "first"))
-        await scope.add(DependencyKey(name="second", type=Service), await make_recording_guard(events, "second"))
+        scope = Scope({})
+        await add_dependency(scope, make_recording_factory(events, "first"), DependencyKey(name="first", type=Service))
+        await add_dependency(
+            scope, make_recording_factory(events, "second"), DependencyKey(name="second", type=Service)
+        )
 
         await scope.close(None)
 
@@ -273,8 +204,8 @@ class TestScope:
 
     async def test_raises_single_closing_error_as_is(self) -> None:
         error = ValueError("closing_error")
-        scope = ClosableScope()
-        await scope.add(DependencyKey(name="", type=Service), await make_failing_guard(error))
+        scope = Scope({})
+        await add_dependency(scope, make_failing_factory(error))
 
         with pytest.raises(ValueError, match="closing_error") as exc_info:
             await scope.close(None)
@@ -284,16 +215,16 @@ class TestScope:
     async def test_closes_all_dependencies_and_raises_exception_group_when_several_closings_fail(self) -> None:
         first_error = ValueError("first")
         second_error = ValueError("second")
-        scope = ClosableScope()
-        await scope.add(DependencyKey(name="first", type=Service), await make_failing_guard(first_error))
-        await scope.add(DependencyKey(name="second", type=Service), await make_failing_guard(second_error))
+        scope = Scope({})
+        await add_dependency(scope, make_failing_factory(first_error), DependencyKey(name="first", type=Service))
+        await add_dependency(scope, make_failing_factory(second_error), DependencyKey(name="second", type=Service))
 
         with pytest.raises(ExceptionGroup) as exc_info:
             await scope.close(None)
 
         assert exc_info.value.exceptions == (second_error, first_error)
 
-    async def test_closes_dependencies_with_error_on_exit(self) -> None:
+    async def test_throws_error_into_factory_on_exit(self) -> None:
         async def service() -> AsyncGenerator[Service]:
             try:
                 yield Service()
@@ -303,14 +234,35 @@ class TestScope:
 
         errors: MutableSequence[Exception] = []
         error = ValueError("error")
-        scope = ClosableScope()
-        await scope.add(EFFECT_KEY, await AsyncGeneratorFunctionEffectDependencyResolver(service).resolve({}))
+        scope = Scope({})
+        await add_dependency(scope, service)
 
         with pytest.raises(ValueError, match="error"):
             async with scope:
                 raise error
 
         assert errors == [error]
+
+    async def test_does_not_raise_when_factory_suppresses_scope_error(self) -> None:
+        async def service() -> AsyncGenerator[Service]:
+            with suppress(ValueError):
+                yield Service()
+
+        scope = Scope({})
+        await add_dependency(scope, service)
+
+        await scope.close(ValueError("scope_error"))
+
+    async def test_raises_runtime_error_when_factory_yields_twice(self) -> None:
+        async def service() -> AsyncGenerator[Service]:
+            yield Service()
+            yield Service()
+
+        scope = Scope({})
+        await add_dependency(scope, service)
+
+        with pytest.raises(RuntimeError):
+            await scope.close(None)
 
     async def test_adds_closing_errors_as_notes_when_scope_is_cancelled(self) -> None:
         async def service() -> AsyncGenerator[Service]:
@@ -320,72 +272,66 @@ class TestScope:
                 raise ValueError("closing_error")
 
         cancellation = CancelledError()
-        scope = ClosableScope()
-        await scope.add(
-            key=DependencyKey(name="", type=Service),
-            guard=await AsyncGeneratorFunctionEffectDependencyResolver(service).resolve({}),
-        )
+        scope = Scope({})
+        await add_dependency(scope, service)
 
         await scope.close(cancellation)
 
         assert cancellation.__notes__ == ["Failed to close a dependency: ValueError('closing_error')"]
 
-    async def test_does_not_raise_when_scope_error_is_the_only_error(self) -> None:
-        scope = ClosableScope()
-        await scope.add(DependencyKey(name="", type=Service), ValueDependencyGuard(Service()))
-
-        await scope.close(ValueError("scope_error"))
-
 
 class TestDependencyMatching:
     async def test_matches_dependency_by_type_when_it_is_the_only_candidate(self) -> None:
-        service = Service()
-
         async def handler(any_name: Service) -> None:
             calls.append(any_name)
 
         calls: MutableSequence[Service] = []
-        await run_handler(handler, [EffectDependencyDef(InstanceEffectDependencyResolver(service), name="service")])
+        await run_handler(handler, [EffectDependencyDef(make_service, name="service")])
 
-        assert calls == [service]
+        assert [type(call) for call in calls] == [Service]
 
     async def test_matches_dependency_by_base_class(self) -> None:
-        service = Service()
-
         async def handler(service: BaseService) -> None:
             calls.append(service)
 
         calls: MutableSequence[BaseService] = []
-        await run_handler(handler, [EffectDependencyDef(InstanceEffectDependencyResolver(service))])
+        await run_handler(handler, [EffectDependencyDef(make_service)])
 
-        assert calls == [service]
+        assert [type(call) for call in calls] == [Service]
 
     async def test_matches_dependency_by_name_when_several_have_matching_type(self) -> None:
-        first = Service()
-        second = Service()
+        async def first() -> AsyncGenerator[Service]:
+            yield Service()
+
+        async def second() -> AsyncGenerator[Service]:
+            yield second_service
 
         async def handler(second: BaseService) -> None:
             calls.append(second)
 
         calls: MutableSequence[BaseService] = []
+        second_service = Service()
         await run_handler(
             handler=handler,
             dependency_defs=[
-                EffectDependencyDef(InstanceEffectDependencyResolver(first), name="first"),
-                EffectDependencyDef(InstanceEffectDependencyResolver(second), name="second", type=BaseService),
+                EffectDependencyDef(first, name="first"),
+                EffectDependencyDef(second, name="second", type=BaseService),
             ],
         )
 
-        assert calls == [second]
+        assert calls == [second_service]
 
     def test_raises_ambiguous_dependency_error_when_name_does_not_choose_one_dependency(self) -> None:
+        async def base_service() -> AsyncGenerator[BaseService]:
+            yield BaseService()
+
         async def handler(service: BaseService) -> None:
             pass
 
         container = EffectDependencyContainer(
             dependency_defs=[
-                EffectDependencyDef(InstanceEffectDependencyResolver(Service()), name="first"),
-                EffectDependencyDef(InstanceEffectDependencyResolver(BaseService()), name="second"),
+                EffectDependencyDef(make_service, name="first"),
+                EffectDependencyDef(base_service, name="second"),
             ],
             effect_types=[TestInternalEffect],
         )
@@ -404,7 +350,7 @@ class TestDependencyMatching:
             pass
 
         container = EffectDependencyContainer(
-            dependency_defs=[EffectDependencyDef(InstanceEffectDependencyResolver(OtherService()), name="service")],
+            dependency_defs=[EffectDependencyDef(make_other_service, name="service")],
             effect_types=[TestInternalEffect],
         )
 
@@ -417,52 +363,54 @@ class TestDependencyMatching:
         async def handler(service: object) -> None:
             pass
 
-        container = EffectDependencyContainer(
-            dependency_defs=[EffectDependencyDef(InstanceEffectDependencyResolver(Service()))]
-        )
+        container = EffectDependencyContainer(dependency_defs=[EffectDependencyDef(make_service)])
 
         with pytest.raises(DependencyNotFoundError):
             container.prepare_effect_handler(TestInternalEffect, handler)
 
     async def test_matches_generic_alias_exactly(self) -> None:
-        int_generic = Generic[int]()
-        str_generic = Generic[str]()
+        async def int_generic() -> AsyncGenerator[Generic[int]]:
+            yield int_value
+
+        async def str_generic() -> AsyncGenerator[Generic[str]]:
+            yield Generic[str]()
 
         async def handler(generic: Generic[int]) -> None:
             calls.append(generic)
 
         calls: MutableSequence[Generic[int]] = []
+        int_value = Generic[int]()
         await run_handler(
             handler=handler,
-            dependency_defs=[
-                EffectDependencyDef(InstanceEffectDependencyResolver(int_generic), type=Generic[int]),
-                EffectDependencyDef(InstanceEffectDependencyResolver(str_generic), type=Generic[str]),
-            ],
+            dependency_defs=[EffectDependencyDef(int_generic), EffectDependencyDef(str_generic)],
         )
 
-        assert calls == [int_generic]
+        assert calls == [int_value]
 
     def test_raises_dependency_not_found_error_when_generic_alias_does_not_match(self) -> None:
+        async def int_generic() -> AsyncGenerator[Generic[int]]:
+            yield Generic[int]()
+
         async def handler(generic: Generic[str]) -> None:
             pass
 
-        container = EffectDependencyContainer(
-            dependency_defs=[EffectDependencyDef(InstanceEffectDependencyResolver(Generic[int]()), type=Generic[int])],
-        )
+        container = EffectDependencyContainer(dependency_defs=[EffectDependencyDef(int_generic)])
 
         with pytest.raises(DependencyNotFoundError):
             container.prepare_effect_handler(TestInternalEffect, handler)
 
     async def test_matches_generic_parameterized_with_any_as_generic_class(self) -> None:
-        generic = Generic[int]()
+        async def int_generic() -> AsyncGenerator[Generic[int]]:
+            yield int_value
 
         async def handler(generic: Generic[Any]) -> None:
             calls.append(generic)
 
         calls: MutableSequence[Generic[Any]] = []
-        await run_handler(handler, [EffectDependencyDef(InstanceEffectDependencyResolver(generic))])
+        int_value = Generic[int]()
+        await run_handler(handler, [EffectDependencyDef(int_generic, type=Generic)])
 
-        assert calls == [generic]
+        assert calls == [int_value]
 
 
 class TestBuiltinDependencies:
@@ -514,9 +462,9 @@ class TestBuiltinDependencies:
             message_context: MessageContext,
             effect: Effect[Any],
             effect_context: EffectContext,
-        ) -> Service:
+        ) -> AsyncGenerator[Service]:
             calls.append(BuiltinDependencies(message, message_context, effect, effect_context))
-            return Service()
+            yield Service()
 
         async def handler(service: Service) -> None:
             pass
@@ -525,40 +473,30 @@ class TestBuiltinDependencies:
         effect = TestInternalEffect()
         await run_handler(
             handler=handler,
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(service), lifetime=EffectDependencyLifetime.EFFECT
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(service, lifetime=EffectDependencyLifetime.EFFECT)],
             effect=effect,
         )
 
         assert calls == [BuiltinDependencies(MESSAGE, MESSAGE_CONTEXT, effect, EFFECT_CONTEXT)]
 
     def test_raises_duplicate_dependency_error_when_dependency_has_builtin_key(self) -> None:
-        dependency_def = EffectDependencyDef(
-            resolver=InstanceEffectDependencyResolver(EffectContext(effect_id="test")),
-            name="effect_context",
-        )
+        async def effect_context() -> AsyncGenerator[EffectContext]:
+            yield EffectContext(effect_id="test")
 
         with pytest.raises(DuplicateDependencyError) as exc_info:
-            EffectDependencyContainer(dependency_defs=[dependency_def])
+            EffectDependencyContainer(dependency_defs=[EffectDependencyDef(effect_context, name="effect_context")])
 
         assert exc_info.value.args == (EFFECT_CONTEXT_KEY,)
 
     def test_raises_dependency_not_found_error_when_handler_effect_does_not_match_factory_effect(self) -> None:
-        async def service(effect: TestExternalReadEffect) -> Service:
-            return Service()
+        async def service(effect: TestExternalReadEffect) -> AsyncGenerator[Service]:
+            yield Service()
 
         async def handler(service: Service) -> None:
             pass
 
         container = EffectDependencyContainer(
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(service), lifetime=EffectDependencyLifetime.EFFECT
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(service, lifetime=EffectDependencyLifetime.EFFECT)],
             effect_types=[TestInternalEffect, TestExternalReadEffect],
         )
 
@@ -573,40 +511,27 @@ class TestBuiltinDependencies:
 
 
 class TestDependencyValidation:
-    def test_raises_instance_lifetime_error_when_instance_lifetime_is_not_application(self) -> None:
-        dependency_def = EffectDependencyDef(
-            InstanceEffectDependencyResolver(Service()), lifetime=EffectDependencyLifetime.MESSAGE
-        )
-
-        with pytest.raises(UnsupportedLifetimeError) as exc_info:
-            EffectDependencyContainer(dependency_defs=[dependency_def])
-
-        assert exc_info.value.args == (dependency_def,)
-
     def test_raises_duplicate_dependency_error_when_dependencies_have_same_key(self) -> None:
         with pytest.raises(DuplicateDependencyError) as exc_info:
             EffectDependencyContainer(
                 dependency_defs=[
-                    EffectDependencyDef(InstanceEffectDependencyResolver(Service()), name="service"),
-                    EffectDependencyDef(InstanceEffectDependencyResolver(Service()), name="service"),
+                    EffectDependencyDef(make_service, name="service"),
+                    EffectDependencyDef(make_service, name="service"),
                 ],
             )
 
         assert exc_info.value.args == (DependencyKey(name="service", type=Service),)
 
     def test_raises_dependency_cycle_error_when_dependencies_depend_on_each_other(self) -> None:
-        async def service(other: OtherService) -> Service:
-            return Service()
+        async def service(other: OtherService) -> AsyncGenerator[Service]:
+            yield Service()
 
-        async def other_service(service: Service) -> OtherService:
-            return OtherService()
+        async def other_service(service: Service) -> AsyncGenerator[OtherService]:
+            yield OtherService()
 
         with pytest.raises(DependencyCycleError):
             EffectDependencyContainer(
-                dependency_defs=[
-                    EffectDependencyDef(AsyncFunctionEffectDependencyResolver(service)),
-                    EffectDependencyDef(AsyncFunctionEffectDependencyResolver(other_service)),
-                ],
+                dependency_defs=[EffectDependencyDef(service), EffectDependencyDef(other_service)],
             )
 
     @pytest.mark.parametrize(
@@ -622,19 +547,14 @@ class TestDependencyValidation:
         lifetime: EffectDependencyLifetime,
         dependency_lifetime: EffectDependencyLifetime,
     ) -> None:
-        async def service(other: OtherService) -> Service:
-            return Service()
-
-        async def other_service() -> OtherService:
-            return OtherService()
+        async def service(other: OtherService) -> AsyncGenerator[Service]:
+            yield Service()
 
         with pytest.raises(DependencyLifetimeError) as exc_info:
             EffectDependencyContainer(
                 dependency_defs=[
-                    EffectDependencyDef(AsyncFunctionEffectDependencyResolver(service), lifetime=lifetime),
-                    EffectDependencyDef(
-                        AsyncFunctionEffectDependencyResolver(other_service), lifetime=dependency_lifetime
-                    ),
+                    EffectDependencyDef(service, lifetime=lifetime),
+                    EffectDependencyDef(make_other_service, lifetime=dependency_lifetime),
                 ],
             )
 
@@ -644,52 +564,47 @@ class TestDependencyValidation:
         )
 
     def test_raises_dependency_lifetime_error_when_application_dependency_depends_on_effect(self) -> None:
-        async def service(effect: TestInternalEffect) -> Service:
-            return Service()
+        async def service(effect: TestInternalEffect) -> AsyncGenerator[Service]:
+            yield Service()
 
         with pytest.raises(DependencyLifetimeError):
             EffectDependencyContainer(
-                dependency_defs=[EffectDependencyDef(AsyncFunctionEffectDependencyResolver(service))],
+                dependency_defs=[EffectDependencyDef(service)],
                 effect_types=[TestInternalEffect],
             )
 
+    def test_raises_dependency_lifetime_error_when_application_dependency_depends_on_message(self) -> None:
+        async def service(message_context: MessageContext) -> AsyncGenerator[Service]:
+            yield Service()
+
+        with pytest.raises(DependencyLifetimeError):
+            EffectDependencyContainer(dependency_defs=[EffectDependencyDef(service)])
+
     def test_validates_dependencies_not_used_by_effect_handlers(self) -> None:
-        async def service(other: OtherService) -> Service:
-            return Service()
+        async def service(other: OtherService) -> AsyncGenerator[Service]:
+            yield Service()
 
         with pytest.raises(DependencyNotFoundError):
             EffectDependencyContainer(
-                dependency_defs=[
-                    EffectDependencyDef(
-                        AsyncFunctionEffectDependencyResolver(service), lifetime=EffectDependencyLifetime.EFFECT
-                    )
-                ],
+                dependency_defs=[EffectDependencyDef(service, lifetime=EffectDependencyLifetime.EFFECT)],
             )
 
     def test_accepts_unused_dependency_on_effect_when_some_effect_type_matches(self) -> None:
-        async def service(effect: TestExternalReadEffect) -> Service:
-            return Service()
+        async def service(effect: TestExternalReadEffect) -> AsyncGenerator[Service]:
+            yield Service()
 
         EffectDependencyContainer(
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(service), lifetime=EffectDependencyLifetime.EFFECT
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(service, lifetime=EffectDependencyLifetime.EFFECT)],
             effect_types=[TestInternalEffect, TestExternalReadEffect],
         )
 
     def test_raises_dependency_not_found_error_when_unused_dependency_needs_unknown_effect(self) -> None:
-        async def service(effect: TestExternalReadEffect) -> Service:
-            return Service()
+        async def service(effect: TestExternalReadEffect) -> AsyncGenerator[Service]:
+            yield Service()
 
         with pytest.raises(DependencyNotFoundError):
             EffectDependencyContainer(
-                dependency_defs=[
-                    EffectDependencyDef(
-                        AsyncFunctionEffectDependencyResolver(service), lifetime=EffectDependencyLifetime.EFFECT
-                    )
-                ],
+                dependency_defs=[EffectDependencyDef(service, lifetime=EffectDependencyLifetime.EFFECT)],
                 effect_types=[TestInternalEffect],
             )
 
@@ -703,17 +618,17 @@ class TestDependencyValidation:
 
 class TestEffectHandlerResolution:
     async def test_resolves_dependencies_in_topological_order(self) -> None:
-        async def base() -> Config:
+        async def base() -> AsyncGenerator[Config]:
             events.append("base")
-            return Config()
+            yield Config()
 
-        async def other(base: Config) -> OtherService:
+        async def other(base: Config) -> AsyncGenerator[OtherService]:
             events.append("other")
-            return OtherService()
+            yield OtherService()
 
-        async def service(other: OtherService, base: Config) -> Service:
+        async def service(other: OtherService, base: Config) -> AsyncGenerator[Service]:
             events.append("service")
-            return Service()
+            yield Service()
 
         async def handler(service: Service, base: Config) -> None:
             events.append("handler")
@@ -722,35 +637,25 @@ class TestEffectHandlerResolution:
         await run_handler(
             handler=handler,
             dependency_defs=[
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(service), lifetime=EffectDependencyLifetime.EFFECT
-                ),
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(other), lifetime=EffectDependencyLifetime.MESSAGE
-                ),
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(base), lifetime=EffectDependencyLifetime.MESSAGE
-                ),
+                EffectDependencyDef(service, lifetime=EffectDependencyLifetime.EFFECT),
+                EffectDependencyDef(other, lifetime=EffectDependencyLifetime.MESSAGE),
+                EffectDependencyDef(base, lifetime=EffectDependencyLifetime.MESSAGE),
             ],
         )
 
         assert events == ["base", "other", "service", "handler"]
 
     async def test_does_not_resolve_message_dependency_again_when_it_is_in_scope(self) -> None:
-        async def service() -> Service:
+        async def service() -> AsyncGenerator[Service]:
             events.append("service")
-            return Service()
+            yield Service()
 
         async def handler(service: Service) -> None:
             pass
 
         events: MutableSequence[str] = []
         container = EffectDependencyContainer(
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(service), lifetime=EffectDependencyLifetime.MESSAGE
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(service, lifetime=EffectDependencyLifetime.MESSAGE)],
         )
         prepared_handler = container.prepare_effect_handler(TestInternalEffect, handler)
         scopes = make_scopes(TestInternalEffect())
@@ -760,32 +665,39 @@ class TestEffectHandlerResolution:
 
         assert events == ["service"]
 
+    async def test_does_not_resolve_application_dependency_for_handler(self) -> None:
+        async def handler(service: Service) -> None:
+            pass
+
+        container = EffectDependencyContainer(dependency_defs=[EffectDependencyDef(make_service)])
+
+        prepared_handler = container.prepare_effect_handler(TestInternalEffect, handler)
+
+        assert prepared_handler.steps == ()
+
 
 class TestApplicationLifecycle:
     @pytest.mark.timeout(5)
     async def test_resolves_independent_dependencies_concurrently(self) -> None:
         barrier = Barrier(2)
 
-        async def service() -> Service:
+        async def service() -> AsyncGenerator[Service]:
             await barrier.wait()
-            return Service()
+            yield Service()
 
-        async def other_service() -> OtherService:
+        async def other_service() -> AsyncGenerator[OtherService]:
             await barrier.wait()
-            return OtherService()
+            yield OtherService()
 
         container = EffectDependencyContainer(
-            dependency_defs=[
-                EffectDependencyDef(AsyncFunctionEffectDependencyResolver(service)),
-                EffectDependencyDef(AsyncFunctionEffectDependencyResolver(other_service)),
-            ],
+            dependency_defs=[EffectDependencyDef(service), EffectDependencyDef(other_service)],
         )
 
         async with timeout(1):
             scope = await container.start()
 
-        assert DependencyKey(name="", type=Service) in scope
-        assert DependencyKey(name="", type=OtherService) in scope
+        assert DependencyKey(name="", type=Service) in scope.dependencies
+        assert DependencyKey(name="", type=OtherService) in scope.dependencies
 
     async def test_resolves_dependency_after_its_dependencies_and_closes_it_before_them(self) -> None:
         async def base() -> AsyncGenerator[Config]:
@@ -807,11 +719,7 @@ class TestApplicationLifecycle:
 
         events: MutableSequence[str] = []
         container = EffectDependencyContainer(
-            dependency_defs=[
-                EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(service)),
-                EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(other)),
-                EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(base)),
-            ],
+            dependency_defs=[EffectDependencyDef(service), EffectDependencyDef(other), EffectDependencyDef(base)],
         )
 
         scope = await container.start()
@@ -839,10 +747,7 @@ class TestApplicationLifecycle:
             await barrier.wait()
 
         container = EffectDependencyContainer(
-            dependency_defs=[
-                EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(service)),
-                EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(other_service)),
-            ],
+            dependency_defs=[EffectDependencyDef(service), EffectDependencyDef(other_service)],
         )
         scope = await container.start()
 
@@ -856,20 +761,22 @@ class TestApplicationLifecycle:
             finally:
                 events.append("stop base")
 
-        async def service(base: Config) -> Service:
+        async def service(base: Config) -> AsyncGenerator[Service]:
             raise error
+            yield Service()  # pyright: ignore[reportUnreachable] - makes the factory an async generator
 
-        async def other_service() -> OtherService:
+        async def other_service() -> AsyncGenerator[OtherService]:
             await asyncio.Event().wait()
             raise AssertionError("must be cancelled")
+            yield OtherService()  # pyright: ignore[reportUnreachable] - makes the factory an async generator
 
         events: MutableSequence[str] = []
         error = ValueError("error")
         container = EffectDependencyContainer(
             dependency_defs=[
-                EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(base)),
-                EffectDependencyDef(AsyncFunctionEffectDependencyResolver(service)),
-                EffectDependencyDef(AsyncFunctionEffectDependencyResolver(other_service)),
+                EffectDependencyDef(base),
+                EffectDependencyDef(service),
+                EffectDependencyDef(other_service),
             ],
         )
 
@@ -889,9 +796,7 @@ class TestApplicationLifecycle:
 
         errors: MutableSequence[Exception] = []
         error = ValueError("error")
-        container = EffectDependencyContainer(
-            dependency_defs=[EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(service))]
-        )
+        container = EffectDependencyContainer(dependency_defs=[EffectDependencyDef(service)])
         scope = await container.start()
 
         await container.stop(scope, error)
@@ -911,10 +816,7 @@ class TestApplicationLifecycle:
             raise second_error
 
         container = EffectDependencyContainer(
-            dependency_defs=[
-                EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(service)),
-                EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(other_service)),
-            ],
+            dependency_defs=[EffectDependencyDef(service), EffectDependencyDef(other_service)],
         )
         scope = await container.start()
 
@@ -929,9 +831,9 @@ MESSAGE_CONTEXT = MessageContext(message_id="test_message_id")
 EFFECT_CONTEXT = EffectContext(effect_id="test_effect_id")
 
 
-def make_scopes(effect: Effect[Any], application_scope: ClosableScope | None = None) -> Sequence[ClosableScope]:
+def make_scopes(effect: Effect[Any], application_scope: Scope | None = None) -> Sequence[Scope]:
     return (
-        application_scope or ClosableScope(),
+        application_scope or Scope({}),
         EffectDependencyContainer.make_message_scope(MESSAGE, MESSAGE_CONTEXT),
         EffectDependencyContainer.make_effect_scope(effect, EFFECT_CONTEXT),
     )
@@ -955,17 +857,26 @@ async def run_handler(
     return result
 
 
-async def make_recording_guard(events: MutableSequence[str], name: str) -> DependencyGuard[Service]:
+async def add_dependency(
+    scope: Scope,
+    factory: DependencyFactory[Service],
+    key: DependencyKey = EFFECT_KEY,
+) -> None:
+    context_manager = EffectProvider.make(EffectDependencyDef(factory)).factory()
+    await scope.add(key, await context_manager.__aenter__(), context_manager)
+
+
+def make_recording_factory(events: MutableSequence[str], name: str) -> DependencyFactory[Service]:
     async def service() -> AsyncGenerator[Service]:
         yield Service()
         events.append(f"stop {name}")
 
-    return await AsyncGeneratorFunctionEffectDependencyResolver(service).resolve({})
+    return service
 
 
-async def make_failing_guard(error: Exception) -> DependencyGuard[Service]:
+def make_failing_factory(error: Exception) -> DependencyFactory[Service]:
     async def service() -> AsyncGenerator[Service]:
         yield Service()
         raise error
 
-    return await AsyncGeneratorFunctionEffectDependencyResolver(service).resolve({})
+    return service

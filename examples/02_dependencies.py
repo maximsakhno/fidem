@@ -4,13 +4,7 @@ from collections.abc import AsyncGenerator, MutableMapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from fidem.di.effects import (
-    AsyncFunctionEffectDependencyResolver,
-    AsyncGeneratorFunctionEffectDependencyResolver,
-    EffectDependencyDef,
-    EffectDependencyLifetime,
-    InstanceEffectDependencyResolver,
-)
+from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
 from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, EffectContext, Effectful
 from fidem.environment import EffectDef, EnvironmentImpl
 from fidem.messages import Command, MessageContext
@@ -75,6 +69,11 @@ class EffectLog:
 USERS: MutableMapping[str, User] = {"u1": User(id="u1", name="Alice")}
 
 
+# A factory of a dependency that needs no closing yields it and ends.
+async def settings() -> AsyncGenerator[Settings]:
+    yield Settings(database_url="db://primary", replica_url="db://replica")
+
+
 # Both databases have the type `Database`, handlers choose one by the parameter name.
 async def primary(settings: Settings) -> AsyncGenerator[Database]:
     print(f"[app] connecting to {settings.database_url}")
@@ -102,8 +101,8 @@ async def transaction(primary: Database, message_context: MessageContext) -> Asy
 
 
 # A factory may depend on the effect through any of its base classes.
-async def effect_log(effect: Effect[Any], effect_context: EffectContext) -> EffectLog:
-    return EffectLog(f"[effect {type(effect).__name__} {effect_context.effect_id[:8]}]")
+async def effect_log(effect: Effect[Any], effect_context: EffectContext) -> AsyncGenerator[EffectLog]:
+    yield EffectLog(f"[effect {type(effect).__name__} {effect_context.effect_id[:8]}]")
 
 
 # ── Effects ───────────────────────────────────────────────
@@ -154,17 +153,11 @@ async def main() -> None:
             EffectDef(SaveUserEffect, handle_save_user),
         ],
         dependency_defs=[
-            EffectDependencyDef(
-                InstanceEffectDependencyResolver(Settings(database_url="db://primary", replica_url="db://replica"))
-            ),
-            EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(primary), name="primary"),
-            EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(replica), name="replica"),
-            EffectDependencyDef(
-                AsyncGeneratorFunctionEffectDependencyResolver(transaction), lifetime=EffectDependencyLifetime.MESSAGE
-            ),
-            EffectDependencyDef(
-                AsyncFunctionEffectDependencyResolver(effect_log), lifetime=EffectDependencyLifetime.EFFECT
-            ),
+            EffectDependencyDef(settings),
+            EffectDependencyDef(primary, name="primary"),
+            EffectDependencyDef(replica, name="replica"),
+            EffectDependencyDef(transaction, lifetime=EffectDependencyLifetime.MESSAGE),
+            EffectDependencyDef(effect_log, lifetime=EffectDependencyLifetime.EFFECT),
         ],
     )
 
