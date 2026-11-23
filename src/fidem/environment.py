@@ -11,11 +11,11 @@ from uuid import uuid4
 
 from fidem.di.core import UnsupportedFunctionError
 from fidem.di.effects import (
-    ClosableScope,
-    ClosableScopes,
     EffectDependencyContainer,
     EffectDependencyDef,
     PreparedEffectHandler,
+    Scope,
+    Scopes,
 )
 from fidem.effects import Effect, EffectContext
 from fidem.messages import Command, Message, MessageContext, MessageId
@@ -99,7 +99,7 @@ class EnvironmentImpl(Environment):
             effect_type: self._prepare_effect(effect_def, effect_middleware_defs)
             for effect_type, effect_def in type_to_effect_def.items()
         }
-        self._application_scope: ClosableScope | None = None
+        self._application_scope: Scope | None = None
 
     @classmethod
     def _make_type_to_effect_def(
@@ -148,7 +148,7 @@ class EnvironmentImpl(Environment):
         self._application_scope = None
         await self._dependency_container.stop(application_scope, exc)
 
-    def _get_application_scope(self) -> ClosableScope:
+    def _get_application_scope(self) -> Scope:
         if self._application_scope is None:
             raise EnvironmentNotStartedError
         return self._application_scope
@@ -172,7 +172,7 @@ class EnvironmentImpl(Environment):
     async def _run_execution_plan[ResultT](
         self,
         execution_plan: ExecutionPlan[ResultT],
-        scopes: ClosableScopes,
+        scopes: Scopes,
     ) -> ResultT:
         try:
             instruction = execution_plan.send(None)
@@ -189,7 +189,7 @@ class EnvironmentImpl(Environment):
         finally:
             execution_plan.close()
 
-    def _resolve_instruction(self, instruction: Instruction[Any], scopes: ClosableScopes) -> CallNext:
+    def _resolve_instruction(self, instruction: Instruction[Any], scopes: Scopes) -> CallNext:
         if isinstance(instruction, CallEffectHandlerInstruction):
             prepared_effect = self._get_effect(type(instruction.effect))
             effect_call = EffectCall(
@@ -219,7 +219,7 @@ class EnvironmentImpl(Environment):
         self,
         effect_handler: PreparedEffectHandler,
         effect_call: EffectCall,
-        scopes: ClosableScopes,
+        scopes: Scopes,
     ) -> object:
         effect_scope = self._dependency_container.make_effect_scope(effect_call.effect, effect_call.effect_context)
         async with effect_scope:

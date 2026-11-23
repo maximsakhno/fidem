@@ -8,8 +8,6 @@ import pytest
 
 from fidem.di.core import DependencyNotFoundError, UnsupportedFunctionError
 from fidem.di.effects import (
-    AsyncFunctionEffectDependencyResolver,
-    AsyncGeneratorFunctionEffectDependencyResolver,
     EffectDependencyDef,
     EffectDependencyLifetime,
     ScopeClosedError,
@@ -326,7 +324,7 @@ class TestLifecycle:
         events: MutableSequence[str] = []
         environment = EnvironmentImpl(
             operation_engine=make_operation_engine_mock(),
-            dependency_defs=[EffectDependencyDef(AsyncGeneratorFunctionEffectDependencyResolver(resource))],
+            dependency_defs=[EffectDependencyDef(resource)],
         )
 
         async with environment:
@@ -380,11 +378,7 @@ class TestEffectHandlerDependencies:
         environment = self._make_environment(
             effect_count=2,
             handler=handler,
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncGeneratorFunctionEffectDependencyResolver(resource), lifetime=EffectDependencyLifetime.MESSAGE
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.MESSAGE)],
         )
 
         async with environment:
@@ -405,16 +399,13 @@ class TestEffectHandlerDependencies:
         assert resources[1] is not resources[2]
 
     async def test_does_not_resolve_message_dependency_when_no_effect_needs_it(self) -> None:
-        async def resource() -> Resource:
+        async def resource() -> AsyncGenerator[Resource]:
             raise AssertionError("must not be resolved")
+            yield Resource()  # pyright: ignore[reportUnreachable] - makes the factory an async generator
 
         environment = EnvironmentImpl(
             operation_engine=make_operation_engine_mock(GeneratorFunctionStub()),
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(resource), lifetime=EffectDependencyLifetime.MESSAGE
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.MESSAGE)],
         )
 
         async with environment:
@@ -440,11 +431,7 @@ class TestEffectHandlerDependencies:
         environment = EnvironmentImpl(
             operation_engine=make_operation_engine_mock(execution_plan),
             effect_defs=[EffectDef(TestInternalEffect, handler)],
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncGeneratorFunctionEffectDependencyResolver(resource), lifetime=EffectDependencyLifetime.MESSAGE
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.MESSAGE)],
         )
 
         async with environment:
@@ -466,11 +453,7 @@ class TestEffectHandlerDependencies:
         environment = self._make_environment(
             effect_count=2,
             handler=handler,
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncGeneratorFunctionEffectDependencyResolver(resource), lifetime=EffectDependencyLifetime.EFFECT
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.EFFECT)],
         )
 
         async with environment:
@@ -495,11 +478,7 @@ class TestEffectHandlerDependencies:
         environment = self._make_environment(
             effect_count=1,
             handler=handler,
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncGeneratorFunctionEffectDependencyResolver(resource), lifetime=EffectDependencyLifetime.EFFECT
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.EFFECT)],
         )
 
         async with environment:
@@ -527,11 +506,7 @@ class TestEffectHandlerDependencies:
         environment = EnvironmentImpl(
             operation_engine=make_operation_engine_mock(execution_plan),
             effect_defs=[EffectDef(TestInternalEffect, handler)],
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncGeneratorFunctionEffectDependencyResolver(resource), lifetime=EffectDependencyLifetime.EFFECT
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.EFFECT)],
         )
 
         async with environment:
@@ -562,12 +537,12 @@ class TestEffectHandlerDependencies:
             effect_defs=[EffectDef(TestInternalEffect, handler)],
             dependency_defs=[
                 EffectDependencyDef(
-                    resolver=AsyncGeneratorFunctionEffectDependencyResolver(resource),
+                    factory=resource,
                     lifetime=EffectDependencyLifetime.EFFECT,
                     name="resource",
                 ),
                 EffectDependencyDef(
-                    resolver=AsyncGeneratorFunctionEffectDependencyResolver(failing_resource),
+                    factory=failing_resource,
                     lifetime=EffectDependencyLifetime.EFFECT,
                     name="failing_resource",
                 ),
@@ -593,11 +568,7 @@ class TestEffectHandlerDependencies:
         environment = self._make_environment(
             effect_count=1,
             handler=handler,
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncGeneratorFunctionEffectDependencyResolver(resource), lifetime=EffectDependencyLifetime.EFFECT
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.EFFECT)],
         )
 
         async with environment:
@@ -747,8 +718,9 @@ class TestEffectMiddlewares:
         async def middleware(effect_call: EffectCall, call_next: CallNext) -> object:
             return "middleware_result"
 
-        async def resource() -> Resource:
+        async def resource() -> AsyncGenerator[Resource]:
             raise AssertionError("must not be resolved")
+            yield Resource()  # pyright: ignore[reportUnreachable] - makes the factory an async generator
 
         async def handler(resource: Resource) -> str:
             raise AssertionError("must not be called")
@@ -756,11 +728,7 @@ class TestEffectMiddlewares:
         environment = self._make_environment(
             handler=handler,
             effect_middleware_defs=[EffectMiddlewareDef(middleware)],
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(resource), lifetime=EffectDependencyLifetime.EFFECT
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.EFFECT)],
         )
 
         async with environment:
@@ -792,11 +760,11 @@ class TestEffectMiddlewares:
             effect_middleware_defs=[EffectMiddlewareDef(middleware)],
             dependency_defs=[
                 EffectDependencyDef(
-                    resolver=AsyncGeneratorFunctionEffectDependencyResolver(message_resource),
+                    factory=message_resource,
                     lifetime=EffectDependencyLifetime.MESSAGE,
                 ),
                 EffectDependencyDef(
-                    resolver=AsyncGeneratorFunctionEffectDependencyResolver(effect_resource),
+                    factory=effect_resource,
                     lifetime=EffectDependencyLifetime.EFFECT,
                 ),
             ],
@@ -817,8 +785,9 @@ class TestEffectMiddlewares:
         ]
 
     async def test_passes_dependency_resolution_error_into_middleware(self) -> None:
-        async def resource() -> Resource:
+        async def resource() -> AsyncGenerator[Resource]:
             raise ValueError("resolution_error")
+            yield Resource()  # pyright: ignore[reportUnreachable] - makes the factory an async generator
 
         async def handler(resource: Resource) -> None:
             raise AssertionError("must not be called")
@@ -826,11 +795,7 @@ class TestEffectMiddlewares:
         environment = self._make_environment(
             handler=handler,
             effect_middleware_defs=[EffectMiddlewareDef(self._catch_value_error)],
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(resource), lifetime=EffectDependencyLifetime.EFFECT
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.EFFECT)],
         )
 
         async with environment:
@@ -849,11 +814,7 @@ class TestEffectMiddlewares:
         environment = self._make_environment(
             handler=handler,
             effect_middleware_defs=[EffectMiddlewareDef(self._catch_value_error)],
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncGeneratorFunctionEffectDependencyResolver(resource), lifetime=EffectDependencyLifetime.EFFECT
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.EFFECT)],
         )
 
         async with environment:
@@ -940,8 +901,8 @@ class TestEffectMiddlewares:
             await barrier.wait()
             return await call_next()
 
-        async def resource(message_context: MessageContext) -> Config:
-            return Config(message_context.message_id)
+        async def resource(message_context: MessageContext) -> AsyncGenerator[Config]:
+            yield Config(message_context.message_id)
 
         async def handler(resource: Config) -> str:
             return resource.value
@@ -950,11 +911,7 @@ class TestEffectMiddlewares:
         environment = self._make_environment(
             handler=handler,
             effect_middleware_defs=[EffectMiddlewareDef(middleware)],
-            dependency_defs=[
-                EffectDependencyDef(
-                    AsyncFunctionEffectDependencyResolver(resource), lifetime=EffectDependencyLifetime.MESSAGE
-                )
-            ],
+            dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.MESSAGE)],
         )
 
         async with environment:
@@ -986,7 +943,7 @@ class TestEffectMiddlewares:
             effect_middleware_defs=[EffectMiddlewareDef(middleware)],
             dependency_defs=[
                 EffectDependencyDef(
-                    resolver=AsyncGeneratorFunctionEffectDependencyResolver(resource),
+                    factory=resource,
                     lifetime=EffectDependencyLifetime.MESSAGE,
                 )
             ],
@@ -1020,7 +977,7 @@ class TestEffectMiddlewares:
             effect_middleware_defs=[EffectMiddlewareDef(middleware)],
             dependency_defs=[
                 EffectDependencyDef(
-                    resolver=AsyncGeneratorFunctionEffectDependencyResolver(resource),
+                    factory=resource,
                     lifetime=EffectDependencyLifetime.MESSAGE,
                 )
             ],
