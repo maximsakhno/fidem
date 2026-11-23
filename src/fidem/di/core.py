@@ -156,13 +156,6 @@ class BoundProvider[ProviderT: Provider]:
     arguments: Sequence[DependencyArgument]
 
 
-@dataclass(frozen=True, slots=True)
-class Binding[ProviderT: Provider]:
-    arguments: Sequence[DependencyArgument]
-    providers: Sequence[BoundProvider[ProviderT]]
-    """Providers the consumer needs, each one after its dependencies."""
-
-
 class DependencyGraph[ProviderT: Provider]:
     """Validates dependencies and binds parameters to them."""
 
@@ -300,11 +293,19 @@ class DependencyGraph[ProviderT: Provider]:
         except CycleError as exc:
             raise DependencyCycleError(exc.args[1]) from exc
 
-    def bind(self, consumer: object, parameters: Mapping[str, object], subject_type: type) -> Binding[ProviderT]:
-        """Binds the parameters of a consumer of the given subject and collects the providers it needs."""
-        index = self._add_subject_to_index((subject_type,))
-        arguments = self._bind_parameters(consumer, parameters, index)
+    def bind(
+        self, consumer: object, parameters: Mapping[str, object], subject_type: type
+    ) -> Sequence[DependencyArgument]:
+        """Binds the parameters of a consumer of the given subject."""
+        return self._bind_parameters(consumer, parameters, self._add_subject_to_index((subject_type,)))
 
+    def collect(
+        self,
+        arguments: Collection[DependencyArgument],
+        subject_type: type,
+    ) -> Sequence[BoundProvider[ProviderT]]:
+        """Collects the providers the arguments need, each one after its dependencies."""
+        index = self._add_subject_to_index((subject_type,))
         key_to_arguments: MutableMapping[DependencyKey, Sequence[DependencyArgument]] = {}
         pending = [argument.key for argument in arguments]
         while pending:
@@ -317,8 +318,7 @@ class DependencyGraph[ProviderT: Provider]:
             key_to_arguments[key] = self._bind_parameters(key, provider.parameters, index)
             pending.extend(argument.key for argument in key_to_arguments[key])
 
-        providers = tuple(
+        return tuple(
             BoundProvider(provider=self.providers[key], arguments=key_to_arguments[key])
             for key in self.sort(self._make_graph(key_to_arguments))
         )
-        return Binding(arguments=arguments, providers=providers)

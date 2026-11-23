@@ -14,7 +14,7 @@ from fidem.di.core import (
     make_message_dependencies,
 )
 from fidem.effects import Effect, Effectful
-from fidem.guards import GuardContainer, GuardDef, GuardEffect, GuardProvider, GuardValues, PreparedMessageHandler
+from fidem.guards import GuardContainer, GuardDef, GuardEffect, GuardProvider, GuardValues, PreparedGuards
 from fidem.messages import Command, Message, MessageContext
 from fidem.testing import assert_generator
 from tests.messages import TestCommand
@@ -110,9 +110,9 @@ class TestMessageHandlerPreparation:
             yield from ()
             return f"{context.message_id} {command is MESSAGE}"
 
-        prepared_handler = GuardContainer(message_types=[TestCommand]).prepare_message_handler(TestCommand, handler)
+        prepared = GuardContainer(message_types=[TestCommand]).prepare(TestCommand, [handler])
 
-        assert_generator(generator=prepared_handler.call(make_values()), return_value="test_message_id True")
+        assert_generator(generator=prepared.functions[0].call(make_values()), return_value="test_message_id True")
 
     def test_passes_guard_values_into_handler(self) -> None:
         def service(context: MessageContext) -> Effectful[Service, GuardEffect]:
@@ -125,12 +125,12 @@ class TestMessageHandlerPreparation:
 
         result = Service()
         container = GuardContainer(guard_defs=[GuardDef(service)], message_types=[TestCommand])
-        prepared_handler = container.prepare_message_handler(TestCommand, handler)
+        prepared = container.prepare(TestCommand, [handler])
         values = make_values()
 
-        run_steps(prepared_handler, values)
+        run_steps(prepared, values)
 
-        assert run(prepared_handler.call(values)) is result
+        assert run(prepared.functions[0].call(values)) is result
 
     def test_matches_message_by_its_base_class(self) -> None:
         def service(message: Message[Any]) -> Effectful[Service, GuardEffect]:
@@ -144,9 +144,9 @@ class TestMessageHandlerPreparation:
 
         messages: MutableSequence[Message[Any]] = []
         container = GuardContainer(guard_defs=[GuardDef(service)], message_types=[TestCommand])
-        prepared_handler = container.prepare_message_handler(TestCommand, handler)
+        prepared = container.prepare(TestCommand, [handler])
 
-        run_steps(prepared_handler, make_values())
+        run_steps(prepared, make_values())
 
         assert messages == [MESSAGE]
 
@@ -160,9 +160,9 @@ class TestMessageHandlerPreparation:
             message_types=[TestCommand],
         )
 
-        prepared_handler = container.prepare_message_handler(TestCommand, handler)
+        prepared = container.prepare(TestCommand, [handler])
 
-        assert [step.provider.key for step in prepared_handler.steps] == [DependencyKey(name="", type=OtherService)]
+        assert [step.provider.key for step in prepared.steps] == [DependencyKey(name="", type=OtherService)]
 
     def test_matches_guard_by_name_from_guard_def_when_types_are_same(self) -> None:
         def handler(second: Service) -> Effectful[str, Effect[Any]]:
@@ -177,9 +177,9 @@ class TestMessageHandlerPreparation:
             message_types=[TestCommand],
         )
 
-        prepared_handler = container.prepare_message_handler(TestCommand, handler)
+        prepared = container.prepare(TestCommand, [handler])
 
-        assert [step.provider.key for step in prepared_handler.steps] == [DependencyKey(name="second", type=Service)]
+        assert [step.provider.key for step in prepared.steps] == [DependencyKey(name="second", type=Service)]
 
     def test_raises_dependency_not_found_error_when_guard_needs_other_message_type(self) -> None:
         def service(command: OtherCommand) -> Effectful[Service, GuardEffect]:
@@ -193,7 +193,7 @@ class TestMessageHandlerPreparation:
         container = GuardContainer(guard_defs=[GuardDef(service)], message_types=[TestCommand, OtherCommand])
 
         with pytest.raises(DependencyNotFoundError) as exc_info:
-            container.prepare_message_handler(TestCommand, handler)
+            container.prepare(TestCommand, [handler])
 
         assert exc_info.value.args == (DependencyKey(name="", type=Service), "command", OtherCommand)
 
@@ -212,9 +212,9 @@ class TestMessageHandlerPreparation:
 
         container = GuardContainer(guard_defs=[GuardDef(service), GuardDef(other)], message_types=[TestCommand])
 
-        prepared_handler = container.prepare_message_handler(TestCommand, handler)
+        prepared = container.prepare(TestCommand, [handler])
 
-        assert [step.provider.key.type for step in prepared_handler.steps] == [OtherService, Service]
+        assert [step.provider.key.type for step in prepared.steps] == [OtherService, Service]
 
     def test_does_not_collect_guards_handler_does_not_need(self) -> None:
         def handler() -> Effectful[str, Effect[Any]]:
@@ -223,16 +223,40 @@ class TestMessageHandlerPreparation:
 
         container = GuardContainer(guard_defs=[GuardDef(make_service)], message_types=[TestCommand])
 
-        prepared_handler = container.prepare_message_handler(TestCommand, handler)
+        prepared = container.prepare(TestCommand, [handler])
 
-        assert prepared_handler.steps == ()
+        assert prepared.steps == ()
+
+    def test_collects_guards_of_all_functions_once_in_topological_order(self) -> None:
+        def other(context: MessageContext) -> Effectful[OtherService, GuardEffect]:
+            yield from ()
+            return OtherService()
+
+        def service(other: OtherService) -> Effectful[Service, GuardEffect]:
+            yield from ()
+            return Service()
+
+        def middleware(service: Service) -> Effectful[str, Effect[Any]]:
+            yield from ()
+            return "middleware_result"
+
+        def handler(other: OtherService, service: Service) -> Effectful[str, Effect[Any]]:
+            yield from ()
+            return "command_result"
+
+        container = GuardContainer(guard_defs=[GuardDef(service), GuardDef(other)], message_types=[TestCommand])
+
+        prepared = container.prepare(TestCommand, [middleware, handler])
+
+        assert [step.provider.key.type for step in prepared.steps] == [OtherService, Service]
+        assert [function.function for function in prepared.functions] == [middleware, handler]
 
     def test_raises_unsupported_function_error_when_handler_is_not_generator(self) -> None:
         def handler() -> str:
             return "command_result"
 
         with pytest.raises(UnsupportedFunctionError):
-            GuardContainer().prepare_message_handler(TestCommand, handler)  # pyright: ignore[reportArgumentType] - checks a wrong handler
+            GuardContainer().prepare(TestCommand, [handler])  # pyright: ignore[reportArgumentType] - checks a wrong handler
 
 
 class TestGuardValidation:
@@ -272,6 +296,6 @@ def make_values() -> GuardValues:
     return make_message_dependencies(MESSAGE, MESSAGE_CONTEXT)
 
 
-def run_steps(prepared_handler: PreparedMessageHandler, values: GuardValues) -> None:
-    for step in prepared_handler.steps:
+def run_steps(prepared: PreparedGuards, values: GuardValues) -> None:
+    for step in prepared.steps:
         run(step.run(values))

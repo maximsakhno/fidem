@@ -18,7 +18,7 @@ from fidem.di.core import (
     make_key,
 )
 from fidem.effects import Effect, Effectful, InternalEffect, ReadEffect
-from fidem.messages import Message, MessageHandler
+from fidem.messages import Message
 
 type GuardEffect = ReadEffect[Any] | InternalEffect[Any]
 """Effects a guard may yield."""
@@ -70,14 +70,21 @@ class GuardResolutionStep(BoundProvider[GuardProvider]):
 
 
 @dataclass(slots=True, frozen=True)
-class PreparedMessageHandler:
-    handler: MessageHandler[Any, Any]
-    steps: Sequence[GuardResolutionStep]
-    """Guards the handler needs, each one after its guards."""
+class GuardedFunction:
+    """A function that gets the guard values."""
+
+    function: Callable[..., Effectful[Any, Any]]
     arguments: Sequence[DependencyArgument]
 
     def call(self, values: GuardValues) -> Effectful[Any, Any]:
-        return self.handler(**get_arguments(self.arguments, values))
+        return self.function(**get_arguments(self.arguments, values))
+
+
+@dataclass(slots=True, frozen=True)
+class PreparedGuards:
+    steps: Sequence[GuardResolutionStep]
+    """Guards the functions need, each one after its guards."""
+    functions: Sequence[GuardedFunction]
 
 
 class GuardContainer:
@@ -97,18 +104,31 @@ class GuardContainer:
             builtin_nodes=self._BUILTIN_NODES,
         )
 
-    def prepare_message_handler(
+    def prepare(
         self,
         message_type: type[Message[Any]],
-        handler: MessageHandler[Any, Any],
-    ) -> PreparedMessageHandler:
-        if not isgeneratorfunction(handler):
-            raise UnsupportedFunctionError(handler)
-        binding = self._graph.bind(handler, get_parameters(handler), message_type)
-        return PreparedMessageHandler(
-            handler=handler,
+        functions: Sequence[Callable[..., Effectful[Any, Any]]],
+    ) -> PreparedGuards:
+        guarded_functions = tuple(self._bind(message_type, function) for function in functions)
+        return PreparedGuards(
             steps=tuple(
-                GuardResolutionStep(provider=bound.provider, arguments=bound.arguments) for bound in binding.providers
+                GuardResolutionStep(provider=bound.provider, arguments=bound.arguments)
+                for bound in self._graph.collect(
+                    arguments=[argument for function in guarded_functions for argument in function.arguments],
+                    subject_type=message_type,
+                )
             ),
-            arguments=binding.arguments,
+            functions=guarded_functions,
+        )
+
+    def _bind(
+        self,
+        message_type: type[Message[Any]],
+        function: Callable[..., Effectful[Any, Any]],
+    ) -> GuardedFunction:
+        if not isgeneratorfunction(function):
+            raise UnsupportedFunctionError(function)
+        return GuardedFunction(
+            function=function,
+            arguments=self._graph.bind(function, get_parameters(function), message_type),
         )

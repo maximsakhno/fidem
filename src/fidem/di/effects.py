@@ -291,16 +291,16 @@ class EffectDependencyContainer:
     ) -> PreparedEffectHandler:
         if not iscoroutinefunction(handler):
             raise UnsupportedFunctionError(handler)
-        binding = self._graph.bind(handler, get_parameters(handler), effect_type)
+        arguments = self._graph.bind(handler, get_parameters(handler), effect_type)
         return PreparedEffectHandler(
             handler=handler,
             # Application dependencies are resolved on start.
             steps=tuple(
                 self._make_step(bound.provider, bound.arguments)
-                for bound in binding.providers
+                for bound in self._graph.collect(arguments, effect_type)
                 if bound.provider.lifetime != EffectDependencyLifetime.APPLICATION
             ),
-            arguments=self._scope_arguments(binding.arguments),
+            arguments=self._scope_arguments(arguments),
         )
 
     @classmethod
