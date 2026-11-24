@@ -19,6 +19,12 @@ class EffectContext:
     effect_id: EffectId
 
 
+@dataclass(slots=True, frozen=True)
+class TransactionContext:
+    read_only: bool
+    """The transaction wraps one database read effect, so a factory may skip the database transaction."""
+
+
 class ControlEffect[ResultT](Effect[ResultT]):
     pass
 

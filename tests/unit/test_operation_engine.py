@@ -1,4 +1,4 @@
-from collections.abc import Collection, MutableSequence, Sequence
+from collections.abc import Callable, Collection, MutableSequence, Sequence
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import ANY
@@ -6,9 +6,13 @@ from unittest.mock import ANY
 import pytest
 
 from fidem.di.core import DependencyNotFoundError, UnsupportedFunctionError
-from fidem.effects import DatabaseEffect, DatabaseReadEffect, Effect, EffectContext, Effectful
+from fidem.effects import (
+    Effect,
+    EffectContext,
+    Effectful,
+)
 from fidem.guards import GuardDef, GuardEffect
-from fidem.messages import Command, Event, MessageContext, StagedHandler, Transaction
+from fidem.messages import AtomicEffectful, Command, MessageContext, StagedHandler, TransactionEffectful
 from fidem.operation_engine import (
     AtomicCommandDef,
     CallEffectHandlerInstruction,
@@ -21,11 +25,20 @@ from fidem.operation_engine import (
     MessageMiddlewareDef,
     OperationEngineImpl,
     Proceed,
+    RunTransactionInstruction,
     StagedCommandDef,
+    UnsupportedAtomicResultError,
     UnsupportedEffectError,
 )
 from fidem.testing import YeildStep, assert_generator
-from tests.effects import TestControlEffect, TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
+from tests.effects import (
+    TestControlEffect,
+    TestDatabaseReadEffect,
+    TestDatabaseWriteEffect,
+    TestExternalReadEffect,
+    TestExternalWriteEffect,
+    TestInternalEffect,
+)
 from tests.messages import TestCommand, TestEvent
 from tests.stubs import run
 
@@ -42,6 +55,10 @@ class OtherService:
 class HandlerCall:
     context: MessageContext
     command: TestCommand
+
+
+async def async_transaction() -> str:
+    return "command_result"
 
 
 class TestExecuteEphemeral:
@@ -203,19 +220,245 @@ class TestExecuteEphemeral:
         with pytest.raises(NotImplementedError):
             engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
 
-    def test_raises_not_implemented_error_when_command_is_atomic(self) -> None:
-        def transaction() -> Effectful[str, DatabaseEffect[Any] | Event]:
-            yield from ()
+
+class TestExecuteAtomic:
+    def test_runs_reads_and_then_transaction_in_run_transaction_instruction(self) -> None:
+        def handler() -> AtomicEffectful[str]:
+            read_result = yield from read
+
+            def transaction() -> TransactionEffectful[str]:
+                write_result = yield from write
+                return f"{read_result} {write_result}"
+
+            return transaction
+
+        read = TestDatabaseReadEffect()
+        write = TestDatabaseWriteEffect()
+        command = TestCommand()
+        execution_plan = make_engine(handler, command_def_type=AtomicCommandDef).execute(command, MESSAGE_CONTEXT)
+
+        assert execution_plan.send(None) == make_expected_instruction(read, command)
+        instruction = execution_plan.send("read_result")
+        assert isinstance(instruction, RunTransactionInstruction)
+        assert_generator(
+            generator=instruction.plan,
+            steps=[YeildStep(make_expected_instruction(write, command), "write_result")],
+            return_value="read_result write_result",
+        )
+        with pytest.raises(StopIteration) as exc_info:
+            execution_plan.send("read_result write_result")
+        assert exc_info.value.value == "read_result write_result"
+
+    def test_yields_external_write_effect_returned_by_handler_and_returns_its_result(self) -> None:
+        def handler() -> AtomicEffectful[str]:
+            yield from read
+            return write
+
+        read = TestExternalReadEffect()
+        write = TestExternalWriteEffect()
+        command = TestCommand()
+
+        assert_generator(
+            generator=make_engine(handler, command_def_type=AtomicCommandDef).execute(command, MESSAGE_CONTEXT),
+            steps=[
+                YeildStep(make_expected_instruction(read, command), "read_result"),
+                YeildStep(make_expected_instruction(write, command), "write_result"),
+            ],
+            return_value="write_result",
+        )
+
+    @pytest.mark.parametrize(
+        argnames="effect",
+        argvalues=[
+            TestDatabaseWriteEffect(),
+            TestExternalWriteEffect(),
+            TestControlEffect(),
+            TestEvent(),
+            TestCommand(),
+            Proceed(),
+        ],
+    )
+    def test_raises_unsupported_effect_error_when_handler_yields_unsupported_effect(self, effect: Effect[Any]) -> None:
+        def handler() -> Effectful[object, Effect[Any]]:
+            yield from effect
+            return write_transaction
+
+        engine = make_engine(handler, command_def_type=AtomicCommandDef)
+
+        with pytest.raises(UnsupportedEffectError) as exc_info:
+            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+
+        assert exc_info.value.args == (effect,)
+
+    @pytest.mark.parametrize(
+        argnames="effect",
+        argvalues=[TestInternalEffect(), TestExternalReadEffect(), TestExternalWriteEffect(), TestEvent()],
+    )
+    def test_raises_unsupported_effect_error_when_transaction_yields_unsupported_effect(
+        self,
+        effect: Effect[Any],
+    ) -> None:
+        def transaction() -> Effectful[str, Effect[Any]]:
+            yield from effect
             return "command_result"
 
-        def handler() -> Effectful[Transaction[str, Event], DatabaseReadEffect[Any]]:
+        def handler() -> Effectful[object, Effect[Any]]:
             yield from ()
             return transaction
 
-        engine = OperationEngineImpl(command_defs=[AtomicCommandDef("test", TestCommand, handler)])
+        engine = make_engine(handler, command_def_type=AtomicCommandDef)
 
-        with pytest.raises(NotImplementedError):
-            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
+        with pytest.raises(UnsupportedEffectError) as exc_info:
+            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+
+        assert exc_info.value.args == (effect,)
+
+    @pytest.mark.parametrize(
+        argnames="result",
+        argvalues=["not_a_write", TestDatabaseWriteEffect(), lambda: "not_a_generator", async_transaction],
+    )
+    def test_raises_unsupported_atomic_result_error_when_handler_returns_neither_transaction_nor_external_write(
+        self,
+        result: object,
+    ) -> None:
+        def handler() -> Effectful[object, Effect[Any]]:
+            yield from ()
+            return result
+
+        engine = make_engine(handler, command_def_type=AtomicCommandDef)
+
+        with pytest.raises(UnsupportedAtomicResultError) as exc_info:
+            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+
+        assert exc_info.value.args == (result,)
+
+    def test_does_not_throw_unsupported_atomic_result_error_into_middleware(self) -> None:
+        def middleware() -> Effectful[object, Effect[Any]]:
+            try:
+                return (yield from Proceed())
+            except Exception:  # noqa: BLE001 - checks that no error reaches the middleware
+                return "swallowed"
+
+        def handler() -> Effectful[object, Effect[Any]]:
+            yield from ()
+            return "not_a_write"
+
+        engine = make_engine(
+            handler, command_def_type=AtomicCommandDef, middleware_defs=[MessageMiddlewareDef("test", middleware)]
+        )
+
+        with pytest.raises(UnsupportedAtomicResultError):
+            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+
+    def test_throws_effect_error_into_transaction(self) -> None:
+        def transaction() -> TransactionEffectful[str]:
+            try:
+                yield from TestDatabaseWriteEffect()
+            except ValueError as exc:
+                return str(exc)
+            return "unreachable"
+
+        def handler() -> AtomicEffectful[str]:
+            yield from ()
+            return transaction
+
+        engine = make_engine(handler, command_def_type=AtomicCommandDef)
+
+        result = run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT), raise_effect_error)
+
+        assert result == "effect_error"
+
+    def test_throws_transaction_error_into_middleware(self) -> None:
+        def middleware() -> Effectful[object, Effect[Any]]:
+            try:
+                return (yield from Proceed())
+            except ValueError as exc:
+                return str(exc)
+
+        def handler() -> AtomicEffectful[str]:
+            yield from ()
+            return write_transaction
+
+        engine = make_engine(
+            handler, command_def_type=AtomicCommandDef, middleware_defs=[MessageMiddlewareDef("test", middleware)]
+        )
+
+        result = run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT), raise_effect_error)
+
+        assert result == "effect_error"
+
+    @pytest.mark.parametrize(argnames="write", argvalues=[TestDatabaseWriteEffect(), TestExternalWriteEffect()])
+    def test_generates_write_effect_ids_after_read_effect_ids_like_staged_handler(
+        self,
+        write: TestDatabaseWriteEffect | TestExternalWriteEffect,
+    ) -> None:
+        def transaction() -> Effectful[str, Effect[Any]]:
+            return (yield from write)
+
+        def atomic_handler() -> Effectful[object, Effect[Any]]:
+            yield from TestInternalEffect()
+            yield from TestDatabaseReadEffect()
+            return write if isinstance(write, TestExternalWriteEffect) else transaction
+
+        def staged_handler() -> Effectful[str, Effect[Any]]:
+            yield from TestInternalEffect()
+            yield from TestDatabaseReadEffect()
+            return (yield from write)
+
+        atomic_effect_ids = collect_effect_ids(
+            make_engine(atomic_handler, command_def_type=AtomicCommandDef).execute(TestCommand(), MESSAGE_CONTEXT)
+        )
+        staged_effect_ids = collect_effect_ids(make_engine(staged_handler).execute(TestCommand(), MESSAGE_CONTEXT))
+
+        assert atomic_effect_ids == staged_effect_ids
+
+    def test_runs_both_phases_on_each_proceed_with_same_effect_ids(self) -> None:
+        def middleware() -> Effectful[object, Effect[Any]]:
+            first_result = yield from Proceed()
+            second_result = yield from Proceed()
+            return f"{first_result} {second_result}"
+
+        def handler() -> AtomicEffectful[str]:
+            yield from TestDatabaseReadEffect()
+            return write_transaction
+
+        effect_ids: MutableSequence[str] = []
+        engine = make_engine(
+            handler, command_def_type=AtomicCommandDef, middleware_defs=[MessageMiddlewareDef("test", middleware)]
+        )
+
+        result = run_plan(
+            execution_plan=engine.execute(TestCommand(), MESSAGE_CONTEXT),
+            call_effect_handler=lambda instruction: (
+                effect_ids.append(instruction.effect_context.effect_id) or "effect_result"
+            ),
+        )
+
+        assert result == "effect_result effect_result"
+        assert len(effect_ids) == 4
+        assert effect_ids[:2] == effect_ids[2:]
+
+    def test_runs_guards_before_handler_and_passes_their_values_into_it(self) -> None:
+        def service() -> Effectful[Service, GuardEffect]:
+            yield from TestInternalEffect()
+            return Service()
+
+        def handler(service: Service) -> AtomicEffectful[str]:
+            services.append(service)
+            yield from TestDatabaseReadEffect()
+            return write_transaction
+
+        services: MutableSequence[Service] = []
+        effect_types: MutableSequence[type[Effect[Any]]] = []
+        engine = make_engine(handler, command_def_type=AtomicCommandDef, guard_defs=[GuardDef(service)])
+
+        run_plan(
+            execution_plan=engine.execute(TestCommand(), MESSAGE_CONTEXT),
+            call_effect_handler=lambda instruction: effect_types.append(type(instruction.effect)),
+        )
+
+        assert len(services) == 1
+        assert effect_types == [TestInternalEffect, TestDatabaseReadEffect, TestDatabaseWriteEffect]
 
 
 class TestCommandDefinition:
@@ -753,13 +996,14 @@ def make_engine(
     guard_defs: Collection[GuardDef[Any]] = (),
     middleware_defs: Sequence[MessageMiddlewareDef] = (),
     command_middleware_defs: Sequence[MessageMiddlewareDef] | None = None,
+    command_def_type: type[StagedCommandDef[Any]] | type[AtomicCommandDef[Any]] = StagedCommandDef,
 ) -> OperationEngineImpl:
     return OperationEngineImpl(
         command_defs=[
-            StagedCommandDef(
+            command_def_type(
                 name="test",
                 message_type=TestCommand,
-                handler=handler,
+                handler=handler,  # pyright: ignore[reportArgumentType] - atomic tests also check what the handler type forbids
                 middleware_defs=command_middleware_defs,
             ),
         ],
@@ -800,11 +1044,39 @@ def make_service_with_two_effects() -> Effectful[Service, GuardEffect]:
 
 
 def collect_effect_ids(execution_plan: ExecutionPlan[Any]) -> Sequence[str]:
-    return [
-        instruction.effect_context.effect_id
-        for instruction in execution_plan
-        if isinstance(instruction, CallEffectHandlerInstruction)
-    ]
+    effect_ids: MutableSequence[str] = []
+    run_plan(execution_plan, lambda instruction: effect_ids.append(instruction.effect_context.effect_id))
+    return effect_ids
+
+
+def run_plan(
+    execution_plan: ExecutionPlan[Any],
+    call_effect_handler: Callable[[CallEffectHandlerInstruction[Any]], object] = lambda instruction: None,
+) -> object:
+    """Runs the plan like an environment, the function plays the effect handlers."""
+    try:
+        instruction = execution_plan.send(None)
+        while True:
+            try:
+                if isinstance(instruction, RunTransactionInstruction):
+                    result = run_plan(instruction.plan, call_effect_handler)
+                else:
+                    assert isinstance(instruction, CallEffectHandlerInstruction)
+                    result = call_effect_handler(instruction)
+            except Exception as exc:  # noqa: BLE001 - the plan decides how to handle the error
+                instruction = execution_plan.throw(exc)
+            else:
+                instruction = execution_plan.send(result)
+    except StopIteration as exc:
+        return exc.value
+
+
+def raise_effect_error(instruction: CallEffectHandlerInstruction[Any]) -> object:
+    raise ValueError("effect_error")
+
+
+def write_transaction() -> TransactionEffectful[str]:
+    return (yield from TestDatabaseWriteEffect())
 
 
 def make_expected_instruction(effect: HandledEffect[Any], command: TestCommand) -> CallEffectHandlerInstruction[Any]:

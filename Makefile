@@ -1,4 +1,5 @@
-PYTEST := uv run pytest -n auto --maxprocesses 8
+# All tests of a file run on one worker, so the Postgres tests start one container.
+PYTEST := uv run pytest -n auto --maxprocesses 8 --dist loadfile
 
 .PHONY: default
 default: test

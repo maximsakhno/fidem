@@ -4,18 +4,22 @@ from collections.abc import Callable, Collection, Iterable, Mapping, MutableMapp
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
+from inspect import iscoroutine, isgenerator
 from random import Random
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from fidem.di.core import DependencyKey, make_message_dependencies
 from fidem.effects import (
     ControlEffect,
     DatabaseEffect,
+    DatabaseReadEffect,
     Effect,
     EffectContext,
     Effectful,
     EffectId,
     ExternalEffect,
+    ExternalReadEffect,
+    ExternalWriteEffect,
     InternalEffect,
 )
 from fidem.guards import GUARD_EFFECT_TYPES, GuardContainer, GuardDef, GuardedFunction, GuardResolutionStep, GuardValues
@@ -90,6 +94,13 @@ class CallEffectHandlerInstruction[ResultT](Instruction[ResultT]):
     effect: HandledEffect[ResultT]
 
 
+@dataclass(frozen=True, slots=True)
+class RunTransactionInstruction[ResultT](Instruction[ResultT]):
+    """Runs the plan in one database transaction and returns its result."""
+
+    plan: ExecutionPlan[ResultT]
+
+
 class OperationEngine(ABC):
     @abstractmethod
     def execute[ResultT](
@@ -118,6 +129,13 @@ class CommandNotDefinedError(Exception):
 class UnsupportedEffectError(Exception):
     def __init__(self, effect: Effect[Any]) -> None:
         super().__init__(effect)
+
+
+class UnsupportedAtomicResultError(Exception):
+    """An atomic handler returned neither a transaction nor an external write effect."""
+
+    def __init__(self, result: object) -> None:
+        super().__init__(result)
 
 
 class _EngineError(Exception):
@@ -179,6 +197,12 @@ type _PlanEffect = Callable[[Effect[Any]], Iterable[Instruction[Any]]]
 class OperationEngineImpl(OperationEngine):
     _HANDLED_EFFECT_TYPES: Final = (InternalEffect, ExternalEffect, DatabaseEffect)
     _ANY_EFFECT_TYPES: Final[tuple[type[Effect[Any]], ...]] = (Effect,)
+    _ATOMIC_READ_EFFECT_TYPES: Final[tuple[type[Effect[Any]], ...]] = (
+        InternalEffect,
+        ExternalReadEffect,
+        DatabaseReadEffect,
+    )
+    _TRANSACTION_EFFECT_TYPES: Final[tuple[type[Effect[Any]], ...]] = (DatabaseEffect,)
 
     def __init__(
         self,
@@ -265,9 +289,6 @@ class OperationEngineImpl(OperationEngine):
         if execution_mode != ExecutionMode.EPHEMERAL:
             raise NotImplementedError(f"Execution mode {execution_mode} is not implemented yet")
 
-        if isinstance(prepared_command.command_def, AtomicCommandDef):
-            raise NotImplementedError("Atomic command handlers are not implemented yet")
-
         try:
             return (yield from self._execute(prepared_command, command, message_context))
         except _EngineError as exc:
@@ -291,10 +312,19 @@ class OperationEngineImpl(OperationEngine):
             # Each guard has its own ids, so adding a guard does not shift the ids of the handler effects.
             yield from self._run(
                 effectful=guard.step.run(execution.values),
-                plan_effect=self._make_plan_effect(execution, GUARD_EFFECT_TYPES, guard.seed),
+                plan_effect=self._make_plan_effect(
+                    execution=execution,
+                    allowed_effect_types=GUARD_EFFECT_TYPES,
+                    generate_effect_id=_EffectIdGenerator(execution.seed + guard.seed),
+                ),
             )
 
-        run_inner: Callable[[], ExecutionPlan[Any]] = partial(self._run_handler, execution, prepared_command.handler)
+        run_handler = (
+            self._run_atomic_handler
+            if isinstance(prepared_command.command_def, AtomicCommandDef)
+            else self._run_handler
+        )
+        run_inner: Callable[[], ExecutionPlan[Any]] = partial(run_handler, execution, prepared_command.handler)
         for middleware in reversed(prepared_command.middlewares):
             run_inner = partial(
                 self._run_middleware,
@@ -309,9 +339,38 @@ class OperationEngineImpl(OperationEngine):
         return (
             yield from self._run(
                 effectful=handler.call(execution.values),
-                plan_effect=self._make_plan_effect(execution, self._ANY_EFFECT_TYPES, ""),
+                plan_effect=self._make_plan_effect(
+                    execution=execution,
+                    allowed_effect_types=self._ANY_EFFECT_TYPES,
+                    generate_effect_id=_EffectIdGenerator(execution.seed),
+                ),
             )
         )
+
+    def _run_atomic_handler(self, execution: _Execution, handler: GuardedFunction) -> ExecutionPlan[Any]:
+        # The write continues the ids of the reads, as if the handler yielded it.
+        make_plan_effect = partial(
+            self._make_plan_effect,
+            execution=execution,
+            generate_effect_id=_EffectIdGenerator(execution.seed),
+        )
+        write = yield from self._run(
+            effectful=handler.call(execution.values),
+            plan_effect=make_plan_effect(allowed_effect_types=self._ATOMIC_READ_EFFECT_TYPES),
+        )
+        if isinstance(write, ExternalWriteEffect):
+            return (yield from self._run(iter(write), make_plan_effect(allowed_effect_types=self._ANY_EFFECT_TYPES)))
+        transaction = write() if callable(write) else None
+        if isgenerator(transaction):
+            plan = self._run(
+                effectful=cast(Effectful[Any, Effect[Any]], transaction),
+                plan_effect=make_plan_effect(allowed_effect_types=self._TRANSACTION_EFFECT_TYPES),
+            )
+            return (yield RunTransactionInstruction(plan=plan))
+        if iscoroutine(transaction):
+            # Otherwise Python warns that the coroutine of an async transaction function was never awaited.
+            transaction.close()
+        raise _EngineError(UnsupportedAtomicResultError(write))
 
     def _run_middleware(
         self,
@@ -324,7 +383,11 @@ class OperationEngineImpl(OperationEngine):
                 effectful=middleware.middleware.call(execution.values),
                 plan_effect=partial(
                     self._plan_middleware_effect,
-                    plan_effect=self._make_plan_effect(execution, self._ANY_EFFECT_TYPES, middleware.seed),
+                    plan_effect=self._make_plan_effect(
+                        execution=execution,
+                        allowed_effect_types=self._ANY_EFFECT_TYPES,
+                        generate_effect_id=_EffectIdGenerator(execution.seed + middleware.seed),
+                    ),
                     run_inner=run_inner,
                 ),
             )
@@ -373,12 +436,12 @@ class OperationEngineImpl(OperationEngine):
         cls,
         execution: _Execution,
         allowed_effect_types: tuple[type[Effect[Any]], ...],
-        seed: str,
+        generate_effect_id: Callable[[], EffectId],
     ) -> _PlanEffect:
         return partial(
             cls._make_instruction,
             allowed_effect_types=allowed_effect_types,
-            generate_effect_id=_EffectIdGenerator(execution.seed + seed),
+            generate_effect_id=generate_effect_id,
             execution=execution,
         )
 

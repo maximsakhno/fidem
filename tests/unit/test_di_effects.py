@@ -22,6 +22,7 @@ from fidem.di.core import (
 from fidem.di.effects import (
     EFFECT_CONTEXT_KEY,
     EFFECT_KEY,
+    TRANSACTION_CONTEXT_KEY,
     DependencyFactory,
     DependencyLifetimeError,
     EffectDependencyContainer,
@@ -29,10 +30,11 @@ from fidem.di.effects import (
     EffectDependencyLifetime,
     EffectProvider,
     Scope,
+    TransactionDependencyAccessError,
 )
-from fidem.effects import Effect, EffectContext
+from fidem.effects import Effect, EffectContext, TransactionContext
 from fidem.messages import Event, Message, MessageContext
-from tests.effects import TestExternalReadEffect, TestInternalEffect
+from tests.effects import TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
 from tests.messages import TestCommand
 
 
@@ -337,7 +339,7 @@ class TestDependencyMatching:
         )
 
         with pytest.raises(AmbiguousDependencyError) as exc_info:
-            container.prepare_effect_handler(TestInternalEffect, handler)
+            container.prepare_effect_handler(TestInternalEffect, handler, in_transaction=False)
 
         assert exc_info.value.args == (
             handler,
@@ -355,7 +357,7 @@ class TestDependencyMatching:
         )
 
         with pytest.raises(DependencyNotFoundError) as exc_info:
-            container.prepare_effect_handler(TestInternalEffect, handler)
+            container.prepare_effect_handler(TestInternalEffect, handler, in_transaction=False)
 
         assert exc_info.value.args == (handler, "service", Service)
 
@@ -366,7 +368,7 @@ class TestDependencyMatching:
         container = EffectDependencyContainer(dependency_defs=[EffectDependencyDef(make_service)])
 
         with pytest.raises(DependencyNotFoundError):
-            container.prepare_effect_handler(TestInternalEffect, handler)
+            container.prepare_effect_handler(TestInternalEffect, handler, in_transaction=False)
 
     async def test_matches_generic_alias_exactly(self) -> None:
         async def int_generic() -> AsyncGenerator[Generic[int]]:
@@ -397,7 +399,7 @@ class TestDependencyMatching:
         container = EffectDependencyContainer(dependency_defs=[EffectDependencyDef(int_generic)])
 
         with pytest.raises(DependencyNotFoundError):
-            container.prepare_effect_handler(TestInternalEffect, handler)
+            container.prepare_effect_handler(TestInternalEffect, handler, in_transaction=False)
 
     async def test_matches_generic_parameterized_with_any_as_generic_class(self) -> None:
         async def int_generic() -> AsyncGenerator[Generic[int]]:
@@ -501,7 +503,7 @@ class TestBuiltinDependencies:
         )
 
         with pytest.raises(DependencyNotFoundError) as exc_info:
-            container.prepare_effect_handler(TestInternalEffect, handler)
+            container.prepare_effect_handler(TestInternalEffect, handler, in_transaction=False)
 
         assert exc_info.value.args == (
             DependencyKey(name="", type=Service),
@@ -539,7 +541,9 @@ class TestDependencyValidation:
         argvalues=[
             (EffectDependencyLifetime.APPLICATION, EffectDependencyLifetime.MESSAGE),
             (EffectDependencyLifetime.APPLICATION, EffectDependencyLifetime.EFFECT),
+            (EffectDependencyLifetime.MESSAGE, EffectDependencyLifetime.TRANSACTION),
             (EffectDependencyLifetime.MESSAGE, EffectDependencyLifetime.EFFECT),
+            (EffectDependencyLifetime.TRANSACTION, EffectDependencyLifetime.EFFECT),
         ],
     )
     def test_raises_dependency_lifetime_error_when_dependency_depends_on_narrower_one(
@@ -613,7 +617,7 @@ class TestDependencyValidation:
             pass
 
         with pytest.raises(UnsupportedFunctionError):
-            EffectDependencyContainer().prepare_effect_handler(TestInternalEffect, handler)  # pyright: ignore[reportArgumentType] - checks a wrong handler
+            EffectDependencyContainer().prepare_effect_handler(TestInternalEffect, handler, in_transaction=False)  # pyright: ignore[reportArgumentType] - checks a wrong handler
 
 
 class TestEffectHandlerResolution:
@@ -657,11 +661,31 @@ class TestEffectHandlerResolution:
         container = EffectDependencyContainer(
             dependency_defs=[EffectDependencyDef(service, lifetime=EffectDependencyLifetime.MESSAGE)],
         )
-        prepared_handler = container.prepare_effect_handler(TestInternalEffect, handler)
+        prepared_handler = container.prepare_effect_handler(TestInternalEffect, handler, in_transaction=False)
         scopes = make_scopes(TestInternalEffect())
 
         await prepared_handler.resolve(scopes)
-        await prepared_handler.resolve([scopes[0], scopes[1], make_scopes(TestInternalEffect())[2]])
+        await prepared_handler.resolve([*scopes[:2], *make_scopes(TestInternalEffect())[2:]])
+
+        assert events == ["service"]
+
+    async def test_does_not_resolve_transaction_dependency_again_when_it_is_in_scope(self) -> None:
+        async def service() -> AsyncGenerator[Service]:
+            events.append("service")
+            yield Service()
+
+        async def handler(service: Service) -> None:
+            pass
+
+        events: MutableSequence[str] = []
+        container = EffectDependencyContainer(
+            dependency_defs=[EffectDependencyDef(service, lifetime=EffectDependencyLifetime.TRANSACTION)],
+        )
+        prepared_handler = container.prepare_effect_handler(TestDatabaseWriteEffect, handler, in_transaction=True)
+        scopes = make_scopes(TestDatabaseWriteEffect())
+
+        await prepared_handler.resolve(scopes)
+        await prepared_handler.resolve([*scopes[:3], *make_scopes(TestDatabaseWriteEffect())[3:]])
 
         assert events == ["service"]
 
@@ -671,9 +695,93 @@ class TestEffectHandlerResolution:
 
         container = EffectDependencyContainer(dependency_defs=[EffectDependencyDef(make_service)])
 
-        prepared_handler = container.prepare_effect_handler(TestInternalEffect, handler)
+        prepared_handler = container.prepare_effect_handler(TestInternalEffect, handler, in_transaction=False)
 
         assert prepared_handler.steps == ()
+
+
+class TestTransactionDependencies:
+    async def test_passes_transaction_context_into_factory(self) -> None:
+        async def service(transaction_context: TransactionContext) -> AsyncGenerator[Service]:
+            transaction_contexts.append(transaction_context)
+            yield Service()
+
+        async def handler(service: Service) -> None:
+            pass
+
+        transaction_contexts: MutableSequence[TransactionContext] = []
+        await run_handler(
+            handler=handler,
+            dependency_defs=[EffectDependencyDef(service, lifetime=EffectDependencyLifetime.TRANSACTION)],
+            effect=TestDatabaseWriteEffect(),
+        )
+
+        assert transaction_contexts == [TRANSACTION_CONTEXT]
+
+    async def test_passes_transaction_dependency_into_handler_in_transaction_through_effect_dependency(self) -> None:
+        async def service(other: OtherService) -> AsyncGenerator[Service]:
+            yield Service()
+
+        async def handler(service: Service) -> Service:
+            return service
+
+        result = await run_handler(
+            handler=handler,
+            dependency_defs=[
+                EffectDependencyDef(service, lifetime=EffectDependencyLifetime.EFFECT),
+                EffectDependencyDef(make_other_service, lifetime=EffectDependencyLifetime.TRANSACTION),
+            ],
+            effect=TestDatabaseWriteEffect(),
+        )
+
+        assert isinstance(result, Service)
+
+    def test_raises_transaction_dependency_access_error_when_handler_outside_transaction_requires_transaction_dependency(
+        self,
+    ) -> None:
+        async def handler(service: Service) -> None:
+            pass
+
+        container = EffectDependencyContainer(
+            dependency_defs=[EffectDependencyDef(make_service, lifetime=EffectDependencyLifetime.TRANSACTION)],
+        )
+
+        with pytest.raises(TransactionDependencyAccessError) as exc_info:
+            container.prepare_effect_handler(TestInternalEffect, handler, in_transaction=False)
+
+        assert exc_info.value.args == (handler, DependencyKey(name="", type=Service))
+
+    def test_raises_transaction_dependency_access_error_when_handler_outside_transaction_requires_transaction_context(
+        self,
+    ) -> None:
+        async def handler(transaction_context: TransactionContext) -> None:
+            pass
+
+        with pytest.raises(TransactionDependencyAccessError) as exc_info:
+            EffectDependencyContainer().prepare_effect_handler(TestInternalEffect, handler, in_transaction=False)
+
+        assert exc_info.value.args == (handler, TRANSACTION_CONTEXT_KEY)
+
+    def test_raises_transaction_dependency_access_error_when_handler_outside_transaction_requires_it_through_effect_dependency(
+        self,
+    ) -> None:
+        async def service(other: OtherService) -> AsyncGenerator[Service]:
+            yield Service()
+
+        async def handler(service: Service) -> None:
+            pass
+
+        container = EffectDependencyContainer(
+            dependency_defs=[
+                EffectDependencyDef(service, lifetime=EffectDependencyLifetime.EFFECT),
+                EffectDependencyDef(make_other_service, lifetime=EffectDependencyLifetime.TRANSACTION),
+            ],
+        )
+
+        with pytest.raises(TransactionDependencyAccessError) as exc_info:
+            container.prepare_effect_handler(TestInternalEffect, handler, in_transaction=False)
+
+        assert exc_info.value.args == (DependencyKey(name="", type=Service), DependencyKey(name="", type=OtherService))
 
 
 class TestApplicationLifecycle:
@@ -829,12 +937,14 @@ class TestApplicationLifecycle:
 MESSAGE = TestCommand()
 MESSAGE_CONTEXT = MessageContext(message_id="test_message_id")
 EFFECT_CONTEXT = EffectContext(effect_id="test_effect_id")
+TRANSACTION_CONTEXT = TransactionContext(read_only=False)
 
 
 def make_scopes(effect: Effect[Any], application_scope: Scope | None = None) -> Sequence[Scope]:
     return (
         application_scope or Scope({}),
         EffectDependencyContainer.make_message_scope(MESSAGE, MESSAGE_CONTEXT),
+        EffectDependencyContainer.make_transaction_scope(TRANSACTION_CONTEXT),
         EffectDependencyContainer.make_effect_scope(effect, EFFECT_CONTEXT),
     )
 
@@ -846,11 +956,11 @@ async def run_handler(
 ) -> object:
     effect = effect or TestInternalEffect()
     container = EffectDependencyContainer(dependency_defs=dependency_defs, effect_types=[type(effect)])
-    prepared_handler = container.prepare_effect_handler(type(effect), handler)
+    prepared_handler = container.prepare_effect_handler(type(effect), handler, in_transaction=True)
     application_scope = await container.start()
-    application_scope, message_scope, effect_scope = make_scopes(effect, application_scope)
-    async with message_scope, effect_scope:
-        scopes = (application_scope, message_scope, effect_scope)
+    application_scope, message_scope, transaction_scope, effect_scope = make_scopes(effect, application_scope)
+    async with message_scope, transaction_scope, effect_scope:
+        scopes = (application_scope, message_scope, transaction_scope, effect_scope)
         await prepared_handler.resolve(scopes)
         result = await prepared_handler.call(scopes)
     await container.stop(application_scope, None)

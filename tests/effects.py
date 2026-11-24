@@ -1,4 +1,11 @@
-from fidem.effects import ControlEffect, DatabaseWriteEffect, ExternalReadEffect, InternalEffect
+from fidem.effects import (
+    ControlEffect,
+    DatabaseReadEffect,
+    DatabaseWriteEffect,
+    ExternalReadEffect,
+    ExternalWriteEffect,
+    InternalEffect,
+)
 
 
 class TestInternalEffect(InternalEffect[str]):
@@ -6,6 +13,14 @@ class TestInternalEffect(InternalEffect[str]):
 
 
 class TestExternalReadEffect(ExternalReadEffect[str]):
+    pass
+
+
+class TestExternalWriteEffect(ExternalWriteEffect[str]):
+    pass
+
+
+class TestDatabaseReadEffect(DatabaseReadEffect[str]):
     pass
 
 
