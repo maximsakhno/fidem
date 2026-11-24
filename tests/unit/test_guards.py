@@ -14,8 +14,8 @@ from fidem.di.core import (
     make_message_dependencies,
 )
 from fidem.effects import Effect, Effectful
-from fidem.guards import GuardContainer, GuardDef, GuardEffect, GuardProvider, GuardValues, PreparedGuards
-from fidem.messages import Command, Message, MessageContext
+from fidem.guards import GuardContainer, GuardDef, GuardProvider, GuardValues, PreparedGuards
+from fidem.messages import Command, Message, MessageContext, QueryEffect
 from fidem.testing import assert_generator
 from tests.messages import TestCommand
 from tests.stubs import run
@@ -33,14 +33,14 @@ class OtherCommand(Command[str]):
     pass
 
 
-def make_service() -> Effectful[Service, GuardEffect]:
+def make_service() -> Effectful[Service, QueryEffect]:
     yield from ()
     return Service()
 
 
 class TestGuardProvider:
     def test_takes_parameters_and_key_from_guard_signature(self) -> None:
-        def service(other: OtherService) -> Effectful[Service, GuardEffect]:
+        def service(other: OtherService) -> Effectful[Service, QueryEffect]:
             yield from ()
             return Service()
 
@@ -84,14 +84,14 @@ class TestGuardProvider:
         assert exc_info.value.args == (service,)
 
     def test_raises_unsupported_return_type_error_when_return_type_is_not_effectful(self) -> None:
-        def service() -> Generator[GuardEffect, Any, Service]:
+        def service() -> Generator[QueryEffect, Any, Service]:
             yield from ()
             return Service()
 
         with pytest.raises(UnsupportedReturnTypeError) as exc_info:
             GuardProvider.make(GuardDef(service))
 
-        assert exc_info.value.args == (service, Generator[GuardEffect, Any, Service])
+        assert exc_info.value.args == (service, Generator[QueryEffect, Any, Service])
 
     def test_raises_missing_annotation_error_when_return_type_is_not_annotated(self) -> None:
         def service():  # pyright: ignore[reportUnknownParameterType] - checks a missing annotation
@@ -115,7 +115,7 @@ class TestMessageHandlerPreparation:
         assert_generator(generator=prepared.functions[0].call(make_values()), return_value="test_message_id True")
 
     def test_passes_guard_values_into_handler(self) -> None:
-        def service(context: MessageContext) -> Effectful[Service, GuardEffect]:
+        def service(context: MessageContext) -> Effectful[Service, QueryEffect]:
             yield from ()
             return result
 
@@ -133,7 +133,7 @@ class TestMessageHandlerPreparation:
         assert run(prepared.functions[0].call(values)) is result
 
     def test_matches_message_by_its_base_class(self) -> None:
-        def service(message: Message[Any]) -> Effectful[Service, GuardEffect]:
+        def service(message: Message[Any]) -> Effectful[Service, QueryEffect]:
             messages.append(message)
             yield from ()
             return Service()
@@ -182,7 +182,7 @@ class TestMessageHandlerPreparation:
         assert [step.provider.key for step in prepared.steps] == [DependencyKey(name="second", type=Service)]
 
     def test_raises_dependency_not_found_error_when_guard_needs_other_message_type(self) -> None:
-        def service(command: OtherCommand) -> Effectful[Service, GuardEffect]:
+        def service(command: OtherCommand) -> Effectful[Service, QueryEffect]:
             yield from ()
             return Service()
 
@@ -198,11 +198,11 @@ class TestMessageHandlerPreparation:
         assert exc_info.value.args == (DependencyKey(name="", type=Service), "command", OtherCommand)
 
     def test_collects_guards_in_topological_order(self) -> None:
-        def other(context: MessageContext) -> Effectful[OtherService, GuardEffect]:
+        def other(context: MessageContext) -> Effectful[OtherService, QueryEffect]:
             yield from ()
             return OtherService()
 
-        def service(other: OtherService) -> Effectful[Service, GuardEffect]:
+        def service(other: OtherService) -> Effectful[Service, QueryEffect]:
             yield from ()
             return Service()
 
@@ -228,11 +228,11 @@ class TestMessageHandlerPreparation:
         assert prepared.steps == ()
 
     def test_collects_guards_of_all_functions_once_in_topological_order(self) -> None:
-        def other(context: MessageContext) -> Effectful[OtherService, GuardEffect]:
+        def other(context: MessageContext) -> Effectful[OtherService, QueryEffect]:
             yield from ()
             return OtherService()
 
-        def service(other: OtherService) -> Effectful[Service, GuardEffect]:
+        def service(other: OtherService) -> Effectful[Service, QueryEffect]:
             yield from ()
             return Service()
 
@@ -270,7 +270,7 @@ class TestGuardValidation:
         assert exc_info.value.args == (service,)
 
     def test_raises_dependency_not_found_error_when_unused_guard_needs_unknown_message(self) -> None:
-        def service(command: OtherCommand) -> Effectful[Service, GuardEffect]:
+        def service(command: OtherCommand) -> Effectful[Service, QueryEffect]:
             yield from ()
             return Service()
 
@@ -278,7 +278,7 @@ class TestGuardValidation:
             GuardContainer(guard_defs=[GuardDef(service)], message_types=[TestCommand])
 
     def test_raises_duplicate_dependency_error_when_guard_has_builtin_key(self) -> None:
-        def message_context() -> Effectful[MessageContext, GuardEffect]:
+        def message_context() -> Effectful[MessageContext, QueryEffect]:
             yield from ()
             return MessageContext(message_id="test")
 

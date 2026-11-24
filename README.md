@@ -47,18 +47,29 @@ class RenameUserCommand(Command[User]):
     name: str
 
 
+@dataclass(frozen=True, slots=True)
+class GetUserQuery(Query[User]):
+    user_id: str
+
+
+@WriteTransaction
+def save_user(user: User) -> WriteTransactionEffectful[User]:
+    return (yield from SaveUserEffect(user))
+
+
 def rename_user(command: RenameUserCommand) -> AtomicEffectful[User]:
     user = yield from GetUserEffect(command.user_id)
+    return save_user(replace(user, name=command.name))
 
-    def transaction() -> TransactionEffectful[User]:
-        return (yield from SaveUserEffect(replace(user, name=command.name)))
 
-    return transaction
+def get_user(query: GetUserQuery) -> QueryEffectful[User]:
+    return (yield from GetUserEffect(query.user_id))
 
 
 environment = EnvironmentImpl(
     operation_engine=OperationEngineImpl(
         command_defs=[AtomicCommandDef("rename_user", RenameUserCommand, rename_user)],
+        query_defs=[QueryDef("get_user", GetUserQuery, get_user)],
     ),
     effect_defs=[
         EffectDef(GetUserEffect, handle_get_user),
@@ -68,9 +79,10 @@ environment = EnvironmentImpl(
 )
 async with environment:
     user = await environment.execute(RenameUserCommand("u1", "Alice"), message_id="request-42")
+    user = await environment.query(GetUserQuery("u1"))
 ```
 
-Полные примеры: [`examples/01_ephemeral_command.py`](examples/01_ephemeral_command.py), [`examples/02_dependencies.py`](examples/02_dependencies.py), [`examples/03_guards.py`](examples/03_guards.py), [`examples/04_effect_middlewares.py`](examples/04_effect_middlewares.py), [`examples/05_message_middlewares.py`](examples/05_message_middlewares.py), [`examples/06_atomic_commands.py`](examples/06_atomic_commands.py).
+Полные примеры: [`examples/01_ephemeral_command.py`](examples/01_ephemeral_command.py), [`examples/02_dependencies.py`](examples/02_dependencies.py), [`examples/03_guards.py`](examples/03_guards.py), [`examples/04_effect_middlewares.py`](examples/04_effect_middlewares.py), [`examples/05_message_middlewares.py`](examples/05_message_middlewares.py), [`examples/06_atomic_commands.py`](examples/06_atomic_commands.py), [`examples/07_queries.py`](examples/07_queries.py).
 
 ## Эффекты
 
@@ -78,12 +90,12 @@ async with environment:
 
 Категория определяет, кто и как исполняет эффект:
 
-| Категория        | Что это                                                                                                        | Исполняет   |
-| ---------------- | -------------------------------------------------------------------------------------------------------------- | ----------- |
-| `InternalEffect` | Действие внутри процесса без внешних побочных эффектов: кеш, конфиг, случайные числа, обычный `asyncio.sleep`  | Environment |
-| `ExternalEffect` | Обращение к внешней системе: HTTP, брокер                                                                      | Environment |
-| `DatabaseEffect` | Работа с собственной БД сервиса. Выделена отдельно, потому что на ней строятся outbox и durable-режим          | Environment |
-| `ControlEffect`  | Управление выполнением: `Proceed` в [мидлвари сообщения](#мидлвари-сообщений), 📋 параллельный запуск эффектов | Движок      |
+| Категория        | Что это                                                                                                                                        | Исполняет   |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| `InternalEffect` | Действие внутри процесса без внешних побочных эффектов: кеш, конфиг, случайные числа, обычный `asyncio.sleep`                                  | Environment |
+| `ExternalEffect` | Обращение к внешней системе: HTTP, брокер                                                                                                      | Environment |
+| `DatabaseEffect` | Работа с собственной БД сервиса. Выделена отдельно, потому что на ней строятся outbox и durable-режим                                          | Environment |
+| `ControlEffect`  | Управление выполнением: `Proceed` в [мидлвари сообщения](#мидлвари-сообщений), [транзакции БД](#транзакции-бд), 📋 параллельный запуск эффектов | Движок      |
 
 Внешние и БД-эффекты делятся на чтение и запись: `ExternalReadEffect`, `ExternalWriteEffect`, `DatabaseReadEffect`, `DatabaseWriteEffect`.
 
@@ -112,11 +124,12 @@ async with environment:
 - `name` — стабильное имя для сериализации и хранения, не зависит от имени класса;
 - `message_type`;
 - `handler`;
-- `execution_mode`.
+- `middleware_defs` — [мидлвари](#мидлвари-сообщений) сообщения;
+- `execution_mode` — только у команд и событий: запрос всегда ephemeral.
 
 📋 Ещё будет `version`.
 
-✅ Объявления команд — `StagedCommandDef` и `AtomicCommandDef`. 📋 Объявления событий и запросов.
+✅ Объявления команд — `StagedCommandDef` и `AtomicCommandDef`, запросов — `QueryDef`. 📋 Объявления событий.
 
 📋 `schedule(name, cron, event)` публикует событие по расписанию, `unschedule(name)` снимает его. Расписание хранится в БД.
 
@@ -130,9 +143,9 @@ async with environment:
 
 ### Staged
 
-✅ `StagedHandler` yield-ит любые эффекты. Каждый эффект — отдельный шаг, у которого свой результат.
+✅ Staged-обработчик аннотируется как `StagedEffectful[R, E]`, где `E` — события, которые он публикует. Он yield-ит любые эффекты, в том числе сколько угодно [транзакций](#транзакции-бд), читающих и пишущих. Каждый эффект — отдельный шаг, у которого свой результат. Ошибка транзакции, в том числе ошибка коммита, пробрасывается в обработчик в точке `yield from`.
 
-📋 События, которые yield-ит staged-обработчик, копятся в памяти и публикуются после успешного завершения операции.
+📋 События, которые yield-ит staged-обработчик, копятся в памяти и публикуются после успешного завершения операции. ❓ Вариант: события его транзакций сразу пишутся в outbox с пометкой, что операция не завершилась, и после её успешного завершения помечаются готовыми к обработке.
 
 ✅ Ретраи после ошибки делает [мидлварь](#мидлвари-сообщений), 📋 восстановление после падения процесса — движок в [durable-режиме](#режимы-выполнения). Повторы безопасны, потому что ID эффектов детерминированы, а обработчики записи идемпотентны. Компенсаций нет. ❓ Возможно, позже появится отдельный вид обработчика с компенсациями.
 
@@ -140,11 +153,11 @@ async with environment:
 
 ✅ Делает ровно одну запись, поэтому проблемы двойной записи у него нет. Выполняется в две фазы:
 
-1. Обработчик собирает данные через `InternalEffect`, `ExternalReadEffect` и `DatabaseReadEffect`, а затем возвращает одну запись: `ExternalWriteEffect` или `Transaction` — функцию без аргументов, которая возвращает генератор.
-2. Запись выполняется. `ExternalWriteEffect` — как обычный эффект. `Transaction` yield-ит только `DatabaseEffect` и выполняется в одной [транзакции БД](#транзакции-бд). 📋 Ещё она yield-ит события, и они пишутся в outbox той же транзакцией.
+1. Обработчик собирает данные через `QueryEffect`, как [запрос](#query), а затем возвращает одну запись: `ExternalWriteEffect` или вызов [пишущей транзакции](#транзакции-бд).
+2. Запись выполняется как обычный эффект. 📋 Пишущая транзакция ещё yield-ит события, и они пишутся в outbox той же транзакцией.
 
-- ✅ Обработчик аннотируется как `AtomicEffectful[R, E]`, а функция транзакции — как `TransactionEffectful[R, E]`, где `E` — события транзакции. Если транзакция не публикует событий, `E` не указывается.
-- ✅ Чтения первой фазы выполняются не в транзакции записи, а каждое в своей: в первой фазе бывают медленные внешние вызовы. Согласованность чтения с записью — забота обработчика, например условие в `UPDATE`.
+- ✅ Обработчик аннотируется как `AtomicEffectful[R, E]`, где `E` — события транзакции. Если транзакция не публикует событий, `E` не указывается.
+- ✅ Чтения первой фазы выполняются не в транзакции записи: в первой фазе бывают медленные внешние вызовы. Согласованность чтения с записью — забота обработчика, например условие в `UPDATE`.
 - ✅ Недопустимый эффект в любой фазе — ошибка фреймворка `UnsupportedEffectError`, другой результат обработчика — `UnsupportedAtomicResultError`.
 - ✅ ID эффектов записи продолжают последовательность чтений, как если бы обработчик yield-ил их сам.
 - ✅ Ошибка эффекта транзакции пробрасывается в генератор транзакции. Непойманная ошибка или ошибка коммита откатывает транзакцию и выходит из `Proceed` и `Environment.execute`.
@@ -157,7 +170,10 @@ async with environment:
 
 ### Query
 
-📋 `QueryHandler` yield-ит только `ReadEffect`.
+✅ Запрос выполняется как команда, только читает и возвращает результат: `Environment.query(query, message_id=None)`. Обработчик аннотируется как `QueryEffectful[R]` и yield-ит только `QueryEffect`: `InternalEffect`, `ExternalReadEffect`, `DatabaseReadEffect` и [читающие транзакции](#транзакции-бд). Другой эффект — `UnsupportedEffectError`.
+
+- Гарды и мидлвари — как у команды. Мидлварь запроса может yield-ить запись, например кеш сохраняет результат: запрет записи касается обработчика.
+- Ошибки объявления — `DuplicateQueryDefError`, необъявленный запрос — `QueryNotDefinedError`.
 
 ### События
 
@@ -196,7 +212,7 @@ async with environment:
 
 ## Архитектура
 
-Как выполняется команда:
+Как выполняется команда (запрос — так же, через `Environment.query` и `OperationEngine.query`):
 
 1. Вызывающий код передаёт команду в `Environment.execute`.
 2. Environment получает у движка план выполнения: `OperationEngine.execute(command, message_context)`.
@@ -214,13 +230,13 @@ async with environment:
 **Инструкция** — команда движка для Environment.
 
 - ✅ `CallEffectHandlerInstruction` — вызвать обработчик эффекта. Содержит эффект, `EffectContext`, а также сообщение и `MessageContext`, которые его породили.
-- ✅ `RunTransactionInstruction` — выполнить вложенный план инструкций в одной [транзакции БД](#транзакции-бд) и вернуть его результат.
+- ✅ `RunTransactionInstruction` — выполнить вложенный план инструкций в одной [транзакции БД](#транзакции-бд) и вернуть его результат. Содержит объект транзакции.
 - 📋 Записать в журнал, записать в outbox.
 
 **Environment** (✅)
 
 - Исполняет инструкции и возвращает результаты в план.
-- Запускается и останавливается через `async with environment:`, `execute` вне этого блока — ошибка.
+- Запускается и останавливается через `async with environment:`, `execute` и `query` вне этого блока — ошибка.
 - На старте создаёт APPLICATION-зависимости эффектов, на остановке закрывает их.
 - Владеет обработчиками эффектов, БД, outbox-диспетчером и планировщиком.
 - Своей логики выполнения не содержит. Окружений может быть несколько (например, тестовое).
@@ -229,9 +245,10 @@ async with environment:
 
 | Модуль                   | Содержимое                                                                                      |
 | ------------------------ | ----------------------------------------------------------------------------------------------- |
-| `fidem.effects`          | Эффекты и их категории, `EffectContext`, `TransactionContext`                                   |
-| `fidem.messages`         | Сообщения, `MessageContext`, типы обработчиков сообщений                                        |
-| `fidem.operation_engine` | Объявления команд, режимы, инструкции, мидлвари сообщений, движок                               |
+| `fidem.effects`          | Эффекты и их категории, `EffectContext`                                                         |
+| `fidem.messages`         | Сообщения, `MessageContext`, типы обработчиков сообщений, `QueryEffect`                         |
+| `fidem.transactions`     | Читающие и пишущие транзакции, их эффекты, `TransactionContext`                                 |
+| `fidem.operation_engine` | Объявления команд и запросов, режимы, инструкции, мидлвари сообщений, движок                    |
 | `fidem.environment`      | Объявления эффектов, мидлвари эффектов, Environment                                             |
 | `fidem.di.core`          | Общее для DI и гардов: ключи, разбор сигнатур, сопоставление параметров, проверка графа, ошибки |
 | `fidem.di.effects`       | DI обработчиков эффектов                                                                        |
@@ -263,12 +280,12 @@ async with environment:
 
 - Сигнатура свободная: сообщение, `MessageContext` и значения [гардов](#гарды) подставляются по аннотациям, как у обработчика.
 - Сначала выполняются гарды обработчика и всех его мидлварей, потом мидлвари, потом обработчик. Поэтому общая мидлварь, например кеш, не обходит проверку прав.
-- Мидлварь yield-ит любые эффекты, кроме сообщений и чужих control-эффектов, в том числе запись: кешу нужно сохранить результат. `Proceed` вне мидлвари — ошибка `UnsupportedEffectError`.
+- Мидлварь yield-ит любые эффекты, кроме сообщений и чужих control-эффектов, в том числе запись и транзакции: кешу нужно сохранить результат. `Proceed` вне мидлвари — ошибка `UnsupportedEffectError`.
 - Мидлварь может не вызвать `Proceed` (кеш) или вызвать несколько раз (ретрай). Каждый вызов запускает внутреннюю часть заново, и её эффекты получают те же [ID](#идентификаторы-и-детерминизм). Гарды при этом не перезапускаются.
 - Ошибка внутренней части пробрасывается в мидлварь в точке `yield from Proceed()`, её можно поймать. [Ошибки фреймворка](#ошибки), которые не пробрасываются в обработчик, не пробрасываются и в мидлварь. При прерывании закрываются все генераторы цепочки.
 - Мидлварь регистрируется через `MessageMiddlewareDef(name, middleware)`. Имя стабильное: от него зависят ID эффектов мидлвари. Одинаковые имена в одном списке — ошибка `DuplicateMessageMiddlewareDefError`.
-- Общий список — `OperationEngineImpl(middleware_defs=...)`. Список в `StagedCommandDef(..., middleware_defs=...)` заменяет общий для этой команды, `()` — без мидлварей. Первая в списке — внешняя.
-- Мидлвари и их гарды проверяются при создании движка для всех команд, в том числе atomic. У atomic-команды `Proceed` выполняет обе фазы и возвращает результат записи.
+- Общий список — `OperationEngineImpl(middleware_defs=...)`, он действует на команды и запросы. Список в объявлении сообщения заменяет общий для этого сообщения, `()` — без мидлварей. Первая в списке — внешняя.
+- Мидлвари и их гарды проверяются при создании движка для всех сообщений. У atomic-команды `Proceed` выполняет обе фазы и возвращает результат записи.
 - Настройки мидлварь получает через замыкание.
 
 **Ограничения:** мидлварь — только синхронная генераторная функция, иначе ошибка `UnsupportedFunctionError` при создании движка.
@@ -335,14 +352,46 @@ async def connection(pool: Pool) -> AsyncGenerator[Connection]:
 dependency_defs = [EffectDependencyDef(connection, lifetime=EffectDependencyLifetime.TRANSACTION)]
 ```
 
-- **Явная транзакция** — `Transaction` [atomic-команды](#atomic). Движок yield-ит `RunTransactionInstruction`, Environment открывает скоуп, выполняет вложенный план и закрывает скоуп с ошибкой, с которой тот завершился. Поэтому транзакция откатывается и при ошибке, и при отмене. Ошибка коммита возвращается в план как ошибка инструкции.
-- **Неявная транзакция** — у `DatabaseEffect` вне явной: скоуп на один вызов обработчика, внутри последнего `call_next` [мидлварей эффекта](#мидлвари-эффектов). Поэтому ретрай мидлварью получает новую транзакцию. Ошибка закрытия скоупа — ошибка эффекта.
+✅ **Явная транзакция** объявляется на уровне модуля декоратором над генераторной функцией с любыми параметрами. Вызов объекта транзакции с аргументами — эффект, который её выполняет, поэтому транзакцию можно yield-ить, как любой эффект.
+
+```python
+@dataclass(frozen=True, slots=True)
+class Accounts:
+    source: Account
+    target: Account
+
+
+@ReadTransaction
+def get_accounts(source_id: str, target_id: str) -> ReadTransactionEffectful[Accounts]:
+    source = yield from GetAccountEffect(source_id)
+    target = yield from GetAccountEffect(target_id)
+    return Accounts(source=source, target=target)
+
+
+accounts = yield from get_accounts(command.source_id, command.target_id)
+```
+
+- `ReadTransaction` yield-ит только `DatabaseReadEffect`, чтобы прочитать данные из одного снимка. `WriteTransaction` yield-ит любые `DatabaseEffect`. Другой эффект, в том числе вложенная транзакция, — `UnsupportedEffectError`. Функция транзакции — только генераторная, иначе `UnsupportedFunctionError` при объявлении.
+- Где какие транзакции можно yield-ить:
+
+  | | `ReadTransaction` | `WriteTransaction` |
+  |---|---|---|
+  | query, гард, первая фаза atomic | ✅ | ❌ |
+  | staged, мидлварь сообщения | ✅ | ✅ |
+  | результат atomic | ❌ | ✅ |
+
+- Объект транзакции — ключ, по которому драйвер находит её настройки, например уровень изоляции. Ядро настроек не знает. Транзакция, объявленная внутри обработчика, создаётся заново при каждом вызове, поэтому всегда получает настройки по умолчанию.
+- Эффекты транзакции продолжают последовательность [ID](#идентификаторы-и-детерминизм) того, кто её yield-ит, сама транзакция ID не занимает. Генератор создаётся при каждом выполнении заново.
+- Движок yield-ит `RunTransactionInstruction`, Environment открывает скоуп, выполняет вложенный план и закрывает скоуп с ошибкой, с которой тот завершился. Поэтому транзакция откатывается и при ошибке, и при отмене. Ошибка коммита возвращается в план как ошибка инструкции. Мидлвари эффектов на саму транзакцию не действуют, на её эффекты — действуют.
+
+✅ **Неявная транзакция** — у `DatabaseEffect` вне явной: скоуп на один вызов обработчика, внутри последнего `call_next` [мидлварей эффекта](#мидлвари-эффектов). Поэтому ретрай мидлварью получает новую транзакцию. Ошибка закрытия скоупа — ошибка эффекта.
+
 - Транзакция без эффектов, которым нужны её зависимости, соединение не берёт.
-- `TransactionContext(read_only)` — встроенная зависимость скоупа. `read_only` истинно у неявной транзакции вокруг `DatabaseReadEffect`, и фабрика может не открывать для неё транзакцию БД: при read committed каждый запрос и так видит свой снимок.
+- `TransactionContext(read_only, transaction)` — встроенная зависимость скоупа. `read_only` истинно у читающей транзакции, явной или неявной вокруг `DatabaseReadEffect`. `transaction` — объект явной транзакции, `None` у неявной.
 - Зависимости скоупа `TRANSACTION`, в том числе `TransactionContext`, доступны только обработчикам `DatabaseEffect`, напрямую или через `EFFECT`-зависимости. Иначе ошибка `TransactionDependencyAccessError` при создании Environment. Пул соединений — обычная зависимость, его так не ограничить.
 - Вложенная транзакция — ошибка `NotImplementedError`: она взяла бы другое соединение.
 
-**Ограничения:** ретрай отдельного эффекта мидлварью эффекта внутри явной транзакции повторяет его в той же транзакции, а в PostgreSQL транзакция после ошибки запроса уже сломана. Ретраить надо команду целиком, мидлварью сообщения. ❓ Savepoint-ы. ❓ Где открывать неявную транзакцию в durable-режиме, чтобы запись эффекта и запись журнала шли одной транзакцией.
+**Ограничения:** ретрай отдельного эффекта мидлварью эффекта внутри явной транзакции повторяет его в той же транзакции, а в PostgreSQL транзакция после ошибки запроса уже сломана. Ретраить надо сообщение целиком, мидлварью сообщения. ❓ Savepoint-ы. ❓ Где открывать неявную транзакцию в durable-режиме, чтобы запись эффекта и запись журнала шли одной транзакцией.
 
 ### asyncpg
 
@@ -350,14 +399,15 @@ dependency_defs = [EffectDependencyDef(connection, lifetime=EffectDependencyLife
 
 ```python
 AsyncpgConnectionDef(
-    options=AsyncpgTransactionOptions(isolation="read_committed"),
-    message_options={TransferCommand: AsyncpgTransactionOptions(isolation="serializable")},
+    read_options=AsyncpgTransactionOptions(isolation="repeatable_read"),
+    write_options=AsyncpgTransactionOptions(isolation="read_committed"),
+    transaction_options={record_transfer: AsyncpgTransactionOptions(isolation="serializable")},
 )
 ```
 
-- `options` — настройки по умолчанию, `message_options` — настройки транзакций сообщения, тип которого совпадает точно. Настройки драйвера живут в его объявлении, а не в объявлении команды: ядро о них не знает.
-- Настройки сообщения действуют во всех его транзакциях, кроме неявных транзакций чтения: такая транзакция обёрнута вокруг одного чтения, а настройки сообщения нужны его записям.
-- Неявная транзакция чтения при read committed не открывается.
+- `read_options` и `write_options` — настройки читающих и пишущих транзакций, по умолчанию repeatable read и read committed. `transaction_options` заменяют их для отдельных транзакций, ключ — объект транзакции. Неявная запись берёт `write_options`.
+- Читающая транзакция открывается как `READ ONLY`. По умолчанию она repeatable read: при read committed каждый запрос видит свой снимок, и согласованного чтения не получится.
+- Транзакция, которая только читает, не открывается, если она неявная или её уровень — read committed: в обоих случаях каждый запрос и так видит свой снимок. Поэтому запись в ней БД не запрещает.
 - Транзакцию фабрика открывает и коммитит SQL-командами. Коммит транзакции, в которой упал запрос, PostgreSQL молча превращает в откат. Тогда фабрика бросает `TransactionRolledBackError`, а не сообщает об успехе. `Connection.transaction()` asyncpg этого не замечает.
 
 **Ограничения:** внутри транзакции фабрики обработчик не может вызвать `connection.transaction()`, asyncpg запрещает его в транзакции, открытой SQL-командой. Savepoint — SQL-командой.
@@ -366,12 +416,12 @@ AsyncpgConnectionDef(
 
 ## Гарды
 
-✅ Гард аутентифицирует отправителя сообщения или проверяет его права. Это генераторная функция: она yield-ит эффекты и возвращает значение через `return`, а обработчик получает это значение параметром. Тип значения — первый параметр аннотации `Effectful[ValueT, GuardEffect]`. Гард регистрируется через `GuardDef(guard)` в `OperationEngineImpl(guard_defs=...)`.
+✅ Гард аутентифицирует отправителя сообщения или проверяет его права. Это генераторная функция: она yield-ит эффекты и возвращает значение через `return`, а обработчик получает это значение параметром. Тип значения — первый параметр аннотации `Effectful[ValueT, QueryEffect]`. Гард регистрируется через `GuardDef(guard)` в `OperationEngineImpl(guard_defs=...)`.
 
 - ✅ Сигнатура свободная: параметры — сообщение, `MessageContext` и значения других гардов. Они сопоставляются по [принципам DI](#принципы), скоупов нет. Гарды и зависимости эффектов не пересекаются.
 - ✅ Проверка прав выражается типом значения: гард `admin(user: CurrentUser) -> Admin` либо возвращает `Admin`, либо бросает исключение, поэтому обработчик с параметром `admin: Admin` выполняется только для админа. В отличие от гардов NestJS и Litestar, которые только пропускают или отклоняют, гард возвращает значение.
 - ✅ Гарды, нужные обработчику и его [мидлварям](#мидлвари-сообщений), выполняются перед ними на каждое сообщение, каждый один раз и после гардов, от которых зависит.
-- ✅ Гард yield-ит только чтение (`ExternalReadEffect`, `DatabaseReadEffect`) и `InternalEffect`. Статически это задаёт аннотация `GuardEffect`, в рантайме проверяет движок. 📋 Запросы (`Query`).
+- ✅ Гард yield-ит только `QueryEffect`, как обработчик [запроса](#query). Статически это задаёт аннотация, в рантайме проверяет движок. 📋 Вложенные запросы (`Query`).
 - ✅ Настройки и общие объекты, например проверку токенов, гард получает через замыкание.
 - 📋 У каждой операции свои значения гардов: вложенная команда и каждый обработчик события не наследуют значения родительской операции.
 

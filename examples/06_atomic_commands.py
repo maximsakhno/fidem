@@ -13,16 +13,16 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from decimal import Decimal
 from os import environ
-from typing import Any
 
 from asyncpg import Connection, Pool, create_pool
 
 from fidem.asyncpg import AsyncpgConnectionDef
 from fidem.di.effects import EffectDependencyDef
-from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, EffectContext, Effectful
+from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, EffectContext
 from fidem.environment import EffectDef, EnvironmentImpl
-from fidem.messages import AtomicEffectful, Command, TransactionEffectful
-from fidem.operation_engine import AtomicCommandDef, OperationEngineImpl, StagedCommandDef
+from fidem.messages import AtomicEffectful, Command, Query, QueryEffectful
+from fidem.operation_engine import AtomicCommandDef, OperationEngineImpl, QueryDef
+from fidem.transactions import WriteTransaction, WriteTransactionEffectful
 
 DATABASE_URL = environ.get("DATABASE_URL", "postgresql://postgres@localhost:5432/postgres")
 SCHEMA = """
@@ -122,7 +122,7 @@ async def handle_record_transfer(
     return recorded_id is not None
 
 
-# ── Commands ──────────────────────────────────────────────
+# ── Messages ──────────────────────────────────────────────
 @dataclass(frozen=True, slots=True)
 class TransferCommand(Command[Transfer]):
     source_id: str
@@ -131,36 +131,36 @@ class TransferCommand(Command[Transfer]):
 
 
 @dataclass(frozen=True, slots=True)
-class GetAccountCommand(Command[Account]):
+class GetAccountQuery(Query[Account]):
     account_id: str
 
 
-# First the handler reads outside the transaction, then it returns the writes to run in one transaction.
+# The writes run in one transaction.
+@WriteTransaction
+def record_transfer(command: TransferCommand) -> WriteTransactionEffectful[Transfer]:
+    if (yield from RecordTransferEffect(command.source_id, command.target_id, command.amount)):
+        yield from ChangeBalanceEffect(command.source_id, -command.amount)
+        yield from ChangeBalanceEffect(command.target_id, command.amount)
+    return Transfer(source_id=command.source_id, target_id=command.target_id, amount=command.amount)
+
+
+# First the handler reads outside the transaction, then it returns the transaction with the writes.
 def transfer(command: TransferCommand) -> AtomicEffectful[Transfer]:
     source = yield from GetAccountEffect(command.source_id)
     if source.balance < command.amount:
         raise InsufficientFundsError(source.id)
-
-    def transaction() -> TransactionEffectful[Transfer]:
-        if (yield from RecordTransferEffect(command.source_id, command.target_id, command.amount)):
-            yield from ChangeBalanceEffect(command.source_id, -command.amount)
-            yield from ChangeBalanceEffect(command.target_id, command.amount)
-        return Transfer(source_id=command.source_id, target_id=command.target_id, amount=command.amount)
-
-    return transaction
+    return record_transfer(command)
 
 
-def get_account(command: GetAccountCommand) -> Effectful[Account, DatabaseReadEffect[Any]]:
-    return (yield from GetAccountEffect(command.account_id))
+def get_account(query: GetAccountQuery) -> QueryEffectful[Account]:
+    return (yield from GetAccountEffect(query.account_id))
 
 
 async def main() -> None:
     environment = EnvironmentImpl(
         operation_engine=OperationEngineImpl(
-            command_defs=[
-                AtomicCommandDef("transfer", TransferCommand, transfer),
-                StagedCommandDef("get_account", GetAccountCommand, get_account),
-            ],
+            command_defs=[AtomicCommandDef("transfer", TransferCommand, transfer)],
+            query_defs=[QueryDef("get_account", GetAccountQuery, get_account)],
         ),
         effect_defs=[
             EffectDef(GetAccountEffect, handle_get_account),
@@ -190,7 +190,7 @@ async def main() -> None:
             await environment.execute(TransferCommand("alice", "carol", Decimal(10)))
         except AccountNotFoundError as exc:
             print(f"Error: account {exc} not found")
-        alice = await environment.execute(GetAccountCommand("alice"))
+        alice = await environment.query(GetAccountQuery("alice"))
         print(f"Alice still has {alice.balance}")
         print()
 

@@ -1,7 +1,6 @@
 from collections.abc import Callable, Collection, MutableMapping, Sequence
 from dataclasses import dataclass
-from inspect import isgeneratorfunction
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar
 
 from fidem.di.core import (
     MESSAGE_CONTEXT_KEY,
@@ -12,20 +11,26 @@ from fidem.di.core import (
     DependencyKey,
     Node,
     Provider,
-    UnsupportedFunctionError,
+    check_generator_function,
     get_arguments,
     get_parameters,
     make_key,
 )
-from fidem.effects import Effect, Effectful, InternalEffect, ReadEffect
-from fidem.messages import Message
+from fidem.effects import Effectful
+from fidem.messages import Message, QueryEffect
 
-type GuardEffect = ReadEffect[Any] | InternalEffect[Any]
-"""Effects a guard may yield."""
-GUARD_EFFECT_TYPES: Final[tuple[type[Effect[Any]], ...]] = (ReadEffect, InternalEffect)
-"""Runtime counterpart of `GuardEffect`."""
+__all__ = [
+    "Guard",
+    "GuardContainer",
+    "GuardDef",
+    "GuardProvider",
+    "GuardResolutionStep",
+    "GuardValues",
+    "GuardedFunction",
+    "PreparedGuards",
+]
 
-type Guard[ValueT] = Callable[..., Effectful[ValueT, GuardEffect]]
+type Guard[ValueT] = Callable[..., Effectful[ValueT, QueryEffect]]
 
 
 @dataclass(slots=True, frozen=True)
@@ -45,8 +50,7 @@ class GuardProvider(Provider):
     @classmethod
     def make(cls, guard_def: GuardDef[Any]) -> "GuardProvider":
         guard = guard_def.guard
-        if not isgeneratorfunction(guard):
-            raise UnsupportedFunctionError(guard)
+        check_generator_function(guard)
         return cls(
             key=make_key(
                 function=guard,
@@ -65,7 +69,7 @@ type GuardValues = MutableMapping[DependencyKey, object]
 
 @dataclass(slots=True, frozen=True)
 class GuardResolutionStep(BoundProvider[GuardProvider]):
-    def run(self, values: GuardValues) -> Effectful[None, GuardEffect]:
+    def run(self, values: GuardValues) -> Effectful[None, QueryEffect]:
         values[self.provider.key] = yield from self.provider.guard(**get_arguments(self.arguments, values))
 
 
@@ -126,8 +130,7 @@ class GuardContainer:
         message_type: type[Message[Any]],
         function: Callable[..., Effectful[Any, Any]],
     ) -> GuardedFunction:
-        if not isgeneratorfunction(function):
-            raise UnsupportedFunctionError(function)
+        check_generator_function(function)
         return GuardedFunction(
             function=function,
             arguments=self._graph.bind(function, get_parameters(function), message_type),

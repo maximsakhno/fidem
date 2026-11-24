@@ -3,10 +3,10 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, Effectful
+from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effectful
 from fidem.environment import EffectDef, EnvironmentImpl
-from fidem.guards import Guard, GuardDef, GuardEffect
-from fidem.messages import Command
+from fidem.guards import Guard, GuardDef
+from fidem.messages import Command, QueryEffect, StagedEffectful
 from fidem.operation_engine import OperationEngineImpl, StagedCommandDef
 
 
@@ -91,7 +91,7 @@ class Admin:
 # Guards get their settings through a closure.
 def make_current_user(verifier: TokenVerifier) -> Guard[CurrentUser]:
     # The guard gets the command by its base class, so it serves every authenticated command.
-    def current_user(command: AuthenticatedCommand[Any]) -> Effectful[CurrentUser, GuardEffect]:
+    def current_user(command: AuthenticatedCommand[Any]) -> Effectful[CurrentUser, QueryEffect]:
         user_id = verifier.verify(command.token)
         return CurrentUser((yield from GetUserEffect(user_id)))
 
@@ -99,7 +99,7 @@ def make_current_user(verifier: TokenVerifier) -> Guard[CurrentUser]:
 
 
 # A handler that takes `Admin` runs only for admins.
-def admin(current_user: CurrentUser) -> Effectful[Admin, GuardEffect]:
+def admin(current_user: CurrentUser) -> Effectful[Admin, QueryEffect]:
     yield from ()
     if not current_user.user.is_admin:
         raise PermissionDeniedError(f"{current_user.user.name} is not an admin")
@@ -108,7 +108,7 @@ def admin(current_user: CurrentUser) -> Effectful[Admin, GuardEffect]:
 
 # ── Command handler ───────────────────────────────────────
 # The handler runs only when the guards have authenticated and authorized the command.
-def rename_user(admin: Admin, command: RenameUserCommand) -> Effectful[User, Effect[Any]]:
+def rename_user(admin: Admin, command: RenameUserCommand) -> StagedEffectful[User]:
     print(f"[handler] {admin.user.name} renames {command.user_id} to {command.name}")
     user = yield from GetUserEffect(command.user_id)
     return (yield from SaveUserEffect(replace(user, name=command.name)))

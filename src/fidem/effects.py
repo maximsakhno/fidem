@@ -2,6 +2,24 @@ from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from typing import Any, Self
 
+__all__ = [
+    "ControlEffect",
+    "DatabaseEffect",
+    "DatabaseReadEffect",
+    "DatabaseWriteEffect",
+    "Effect",
+    "EffectContext",
+    "EffectHandler",
+    "EffectId",
+    "Effectful",
+    "ExternalEffect",
+    "ExternalReadEffect",
+    "ExternalWriteEffect",
+    "InternalEffect",
+    "ReadEffect",
+    "WriteEffect",
+]
+
 
 class Effect[ResultT]:
     def __iter__(self) -> Generator[Self, ResultT, ResultT]:
@@ -17,12 +35,6 @@ type EffectId = str
 @dataclass(slots=True, frozen=True)
 class EffectContext:
     effect_id: EffectId
-
-
-@dataclass(slots=True, frozen=True)
-class TransactionContext:
-    read_only: bool
-    """The transaction wraps one database read effect, so a factory may skip the database transaction."""
 
 
 class ControlEffect[ResultT](Effect[ResultT]):

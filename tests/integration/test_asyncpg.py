@@ -1,19 +1,20 @@
-from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Collection, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
 import pytest
-from asyncpg import Connection, DivisionByZeroError, Pool
+from asyncpg import Connection, DivisionByZeroError, Pool, ReadOnlySQLTransactionError
 
-from fidem.asyncpg import AsyncpgConnectionDef, AsyncpgTransactionOptions, IsolationLevel, TransactionRolledBackError
+from fidem.asyncpg import AsyncpgConnectionDef, AsyncpgTransactionOptions, TransactionRolledBackError
 from fidem.di.effects import EffectDependencyDef
 from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, Effectful
 from fidem.environment import EffectDef, EnvironmentImpl
-from fidem.messages import AtomicEffectful, Command, Message, TransactionEffectful
-from fidem.operation_engine import AtomicCommandDef, OperationEngineImpl, StagedCommandDef
-from tests.messages import TestCommand
+from fidem.messages import AtomicEffectful, QueryEffectful
+from fidem.operation_engine import AtomicCommandDef, CommandDef, OperationEngineImpl, QueryDef, StagedCommandDef
+from fidem.transactions import ReadTransaction, ReadTransactionEffectful, WriteTransaction, WriteTransactionEffectful
+from tests.messages import TestCommand, TestQuery
 
 pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
@@ -26,6 +27,10 @@ pytestmark = [
 class TransactionState:
     in_transaction: bool
     isolation: str
+    read_only: bool
+
+
+NO_TRANSACTION = TransactionState(in_transaction=False, isolation="read committed", read_only=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +39,19 @@ class GetItemEffect(DatabaseReadEffect[str | None]):
 
 
 @dataclass(frozen=True, slots=True)
+class GetItemAndChangeItConcurrentlyEffect(DatabaseReadEffect[str | None]):
+    item_id: str
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
 class SaveItemEffect(DatabaseWriteEffect[None]):
+    item_id: str
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
+class SaveItemAsReadEffect(DatabaseReadEffect[None]):
     item_id: str
     value: str
 
@@ -63,7 +80,22 @@ async def handle_get_item(connection: Connection, effect: GetItemEffect) -> str 
     return await connection.fetchval("SELECT value FROM items WHERE id = $1", effect.item_id)
 
 
+# Another connection commits the change while the transaction of the effect is open.
+async def handle_get_item_and_change_it_concurrently(
+    connection: Connection,
+    pool: Pool,
+    effect: GetItemAndChangeItConcurrentlyEffect,
+) -> str | None:
+    value = await connection.fetchval("SELECT value FROM items WHERE id = $1", effect.item_id)
+    await pool.execute("UPDATE items SET value = $2 WHERE id = $1", effect.item_id, effect.value)
+    return value
+
+
 async def handle_save_item(connection: Connection, effect: SaveItemEffect) -> None:
+    await connection.execute("INSERT INTO items (id, value) VALUES ($1, $2)", effect.item_id, effect.value)
+
+
+async def handle_save_item_as_read(connection: Connection, effect: SaveItemAsReadEffect) -> None:
     await connection.execute("INSERT INTO items (id, value) VALUES ($1, $2)", effect.item_id, effect.value)
 
 
@@ -71,6 +103,7 @@ async def handle_transaction_state(connection: Connection) -> TransactionState:
     return TransactionState(
         in_transaction=connection.is_in_transaction(),
         isolation=str(await connection.fetchval("SHOW transaction_isolation")),
+        read_only=await connection.fetchval("SHOW transaction_read_only") == "on",
     )
 
 
@@ -82,21 +115,50 @@ async def handle_fail_query(connection: Connection) -> None:
     await connection.execute("SELECT 1 / 0")
 
 
-class TestAsyncpgConnectionDef:
+@ReadTransaction
+def read_state() -> ReadTransactionEffectful[TransactionState]:
+    return (yield from ReadTransactionStateEffect())
+
+
+@ReadTransaction
+def read_other_state() -> ReadTransactionEffectful[TransactionState]:
+    return (yield from ReadTransactionStateEffect())
+
+
+@WriteTransaction
+def write_state() -> WriteTransactionEffectful[TransactionState]:
+    return (yield from WriteTransactionStateEffect())
+
+
+@WriteTransaction
+def write_other_state() -> WriteTransactionEffectful[TransactionState]:
+    return (yield from WriteTransactionStateEffect())
+
+
+def get_state_in_read_transaction() -> QueryEffectful[TransactionState]:
+    return (yield from read_state())
+
+
+def get_state_in_write_transaction() -> AtomicEffectful[TransactionState]:
+    yield from ()
+    return write_state()
+
+
+class TestTransactions:
     async def test_commits_transaction_of_atomic_command(self, pool: Pool) -> None:
+        @WriteTransaction
+        def save_items(value: str | None) -> WriteTransactionEffectful[str | None]:
+            yield from SaveItemEffect(first_id, "first")
+            yield from SaveItemEffect(second_id, "second")
+            return value
+
         def handler() -> AtomicEffectful[str | None]:
             value = yield from GetItemEffect(first_id)
-
-            def transaction() -> TransactionEffectful[str | None]:
-                yield from SaveItemEffect(first_id, "first")
-                yield from SaveItemEffect(second_id, "second")
-                return value
-
-            return transaction
+            return save_items(value)
 
         first_id = uuid4().hex
         second_id = uuid4().hex
-        environment = make_environment(pool, AtomicCommandDef("test", TestCommand, handler))
+        environment = make_environment(pool, command_defs=[AtomicCommandDef("test", TestCommand, handler)])
 
         async with environment:
             result = await environment.execute(TestCommand())
@@ -105,17 +167,17 @@ class TestAsyncpgConnectionDef:
         assert await fetch_values(pool, first_id, second_id) == ["first", "second"]
 
     async def test_rolls_back_transaction_of_atomic_command_when_it_fails(self, pool: Pool) -> None:
+        @WriteTransaction
+        def save_item() -> WriteTransactionEffectful[None]:
+            yield from SaveItemEffect(item_id, "value")
+            yield from FailEffect()
+
         def handler() -> AtomicEffectful[None]:
             yield from ()
-
-            def transaction() -> TransactionEffectful[None]:
-                yield from SaveItemEffect(item_id, "value")
-                yield from FailEffect()
-
-            return transaction
+            return save_item()
 
         item_id = uuid4().hex
-        environment = make_environment(pool, AtomicCommandDef("test", TestCommand, handler))
+        environment = make_environment(pool, command_defs=[AtomicCommandDef("test", TestCommand, handler)])
 
         async with environment:
             with pytest.raises(ValueError, match="effect_error"):
@@ -127,18 +189,18 @@ class TestAsyncpgConnectionDef:
         self,
         pool: Pool,
     ) -> None:
+        @WriteTransaction
+        def save_item() -> WriteTransactionEffectful[None]:
+            yield from SaveItemEffect(item_id, "value")
+            with suppress(DivisionByZeroError):
+                yield from FailQueryEffect()
+
         def handler() -> AtomicEffectful[None]:
             yield from ()
-
-            def transaction() -> TransactionEffectful[None]:
-                yield from SaveItemEffect(item_id, "value")
-                with suppress(DivisionByZeroError):
-                    yield from FailQueryEffect()
-
-            return transaction
+            return save_item()
 
         item_id = uuid4().hex
-        environment = make_environment(pool, AtomicCommandDef("test", TestCommand, handler))
+        environment = make_environment(pool, command_defs=[AtomicCommandDef("test", TestCommand, handler)])
 
         async with environment:
             with pytest.raises(TransactionRolledBackError):
@@ -146,147 +208,251 @@ class TestAsyncpgConnectionDef:
 
         assert await fetch_values(pool, item_id) == [None]
 
-    async def test_commits_write_effect_outside_transaction_in_its_own_transaction(self, pool: Pool) -> None:
+    @pytest.mark.parametrize(
+        argnames=("connection_def", "expected_values"),
+        argvalues=[
+            (AsyncpgConnectionDef(), ["initial", "initial"]),
+            (
+                AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="read_committed")),
+                ["initial", "changed"],
+            ),
+        ],
+    )
+    async def test_reads_one_snapshot_in_read_transaction_unless_isolation_is_read_committed(
+        self,
+        pool: Pool,
+        connection_def: AsyncpgConnectionDef,
+        expected_values: Sequence[str],
+    ) -> None:
+        @ReadTransaction
+        def read_twice(item_id: str) -> ReadTransactionEffectful[Sequence[str | None]]:
+            first_value = yield from GetItemAndChangeItConcurrentlyEffect(item_id, "changed")
+            second_value = yield from GetItemEffect(item_id)
+            return [first_value, second_value]
+
+        def handler() -> QueryEffectful[Sequence[str | None]]:
+            return (yield from read_twice(item_id))
+
+        item_id = uuid4().hex
+        await pool.execute("INSERT INTO items (id, value) VALUES ($1, 'initial')", item_id)
+        environment = make_environment(
+            pool=pool,
+            query_defs=[QueryDef("test", TestQuery, handler)],
+            connection_def=connection_def,
+        )
+
+        async with environment:
+            result = await environment.query(TestQuery())
+
+        assert result == expected_values
+        assert await fetch_values(pool, item_id) == ["changed"]
+
+    async def test_raises_error_when_read_transaction_writes(self, pool: Pool) -> None:
+        @ReadTransaction
+        def save_item() -> ReadTransactionEffectful[None]:
+            yield from SaveItemAsReadEffect(item_id, "value")
+
+        def handler() -> QueryEffectful[None]:
+            yield from save_item()
+
+        item_id = uuid4().hex
+        environment = make_environment(pool, query_defs=[QueryDef("test", TestQuery, handler)])
+
+        async with environment:
+            with pytest.raises(ReadOnlySQLTransactionError):
+                await environment.query(TestQuery())
+
+        assert await fetch_values(pool, item_id) == [None]
+
+    async def test_commits_each_transaction_of_staged_command(self, pool: Pool) -> None:
+        @WriteTransaction
+        def save_item(item_id: str) -> WriteTransactionEffectful[None]:
+            yield from SaveItemEffect(item_id, "value")
+
+        def handler() -> Effectful[None, Effect[Any]]:
+            yield from save_item(first_id)
+            with suppress(DivisionByZeroError):
+                yield from fail_query()
+            yield from save_item(second_id)
+
+        @WriteTransaction
+        def fail_query() -> WriteTransactionEffectful[None]:
+            yield from SaveItemEffect(failed_id, "value")
+            yield from FailQueryEffect()
+
+        first_id = uuid4().hex
+        failed_id = uuid4().hex
+        second_id = uuid4().hex
+        environment = make_environment(pool, command_defs=[StagedCommandDef("test", TestCommand, handler)])
+
+        async with environment:
+            await environment.execute(TestCommand())
+
+        assert await fetch_values(pool, first_id, failed_id, second_id) == ["value", None, "value"]
+
+
+class TestTransactionOptions:
+    @pytest.mark.parametrize(
+        argnames="connection_def",
+        argvalues=[
+            AsyncpgConnectionDef(),
+            AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="serializable")),
+        ],
+    )
+    async def test_runs_read_effect_outside_transaction_without_database_transaction(
+        self,
+        pool: Pool,
+        connection_def: AsyncpgConnectionDef,
+    ) -> None:
+        def handler() -> QueryEffectful[TransactionState]:
+            return (yield from ReadTransactionStateEffect())
+
+        environment = make_environment(
+            pool, query_defs=[QueryDef("test", TestQuery, handler)], connection_def=connection_def
+        )
+
+        async with environment:
+            result = await environment.query(TestQuery())
+
+        assert result == NO_TRANSACTION
+
+    @pytest.mark.parametrize(
+        argnames=("connection_def", "expected_state"),
+        argvalues=[
+            (
+                AsyncpgConnectionDef(),
+                TransactionState(in_transaction=True, isolation="repeatable read", read_only=True),
+            ),
+            (
+                AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="serializable")),
+                TransactionState(in_transaction=True, isolation="serializable", read_only=True),
+            ),
+            (AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="read_committed")), NO_TRANSACTION),
+            (
+                AsyncpgConnectionDef(write_options=AsyncpgTransactionOptions(isolation="serializable")),
+                TransactionState(in_transaction=True, isolation="repeatable read", read_only=True),
+            ),
+            (
+                AsyncpgConnectionDef(
+                    read_options=AsyncpgTransactionOptions(isolation="repeatable_read"),
+                    transaction_options={read_state: AsyncpgTransactionOptions(isolation="serializable")},
+                ),
+                TransactionState(in_transaction=True, isolation="serializable", read_only=True),
+            ),
+            (
+                AsyncpgConnectionDef(
+                    transaction_options={read_other_state: AsyncpgTransactionOptions(isolation="serializable")},
+                ),
+                TransactionState(in_transaction=True, isolation="repeatable read", read_only=True),
+            ),
+        ],
+    )
+    async def test_runs_read_transaction_with_its_options(
+        self,
+        pool: Pool,
+        connection_def: AsyncpgConnectionDef,
+        expected_state: TransactionState,
+    ) -> None:
+        environment = make_environment(
+            pool=pool,
+            query_defs=[QueryDef("test", TestQuery, get_state_in_read_transaction)],
+            connection_def=connection_def,
+        )
+
+        async with environment:
+            result = await environment.query(TestQuery())
+
+        assert result == expected_state
+
+    @pytest.mark.parametrize(
+        argnames=("connection_def", "expected_isolation"),
+        argvalues=[
+            (AsyncpgConnectionDef(), "read committed"),
+            (
+                AsyncpgConnectionDef(write_options=AsyncpgTransactionOptions(isolation="repeatable_read")),
+                "repeatable read",
+            ),
+            (AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="serializable")), "read committed"),
+            (
+                AsyncpgConnectionDef(
+                    write_options=AsyncpgTransactionOptions(isolation="repeatable_read"),
+                    transaction_options={write_state: AsyncpgTransactionOptions(isolation="serializable")},
+                ),
+                "serializable",
+            ),
+            (
+                AsyncpgConnectionDef(
+                    transaction_options={write_other_state: AsyncpgTransactionOptions(isolation="serializable")},
+                ),
+                "read committed",
+            ),
+        ],
+    )
+    async def test_runs_write_transaction_with_its_options(
+        self,
+        pool: Pool,
+        connection_def: AsyncpgConnectionDef,
+        expected_isolation: str,
+    ) -> None:
+        environment = make_environment(
+            pool=pool,
+            command_defs=[AtomicCommandDef("test", TestCommand, get_state_in_write_transaction)],
+            connection_def=connection_def,
+        )
+
+        async with environment:
+            result = await environment.execute(TestCommand())
+
+        assert result == TransactionState(in_transaction=True, isolation=expected_isolation, read_only=False)
+
+    @pytest.mark.parametrize(
+        argnames=("connection_def", "expected_isolation"),
+        argvalues=[
+            (AsyncpgConnectionDef(), "read committed"),
+            (AsyncpgConnectionDef(write_options=AsyncpgTransactionOptions(isolation="serializable")), "serializable"),
+        ],
+    )
+    async def test_runs_write_effect_outside_transaction_with_write_options(
+        self,
+        pool: Pool,
+        connection_def: AsyncpgConnectionDef,
+        expected_isolation: str,
+    ) -> None:
         def handler() -> Effectful[TransactionState, Effect[Any]]:
             yield from SaveItemEffect(item_id, "value")
             return (yield from WriteTransactionStateEffect())
 
         item_id = uuid4().hex
-        environment = make_environment(pool, StagedCommandDef("test", TestCommand, handler))
+        environment = make_environment(
+            pool=pool,
+            command_defs=[StagedCommandDef("test", TestCommand, handler)],
+            connection_def=connection_def,
+        )
 
         async with environment:
             result = await environment.execute(TestCommand())
 
-        assert result == TransactionState(in_transaction=True, isolation="read committed")
+        assert result == TransactionState(in_transaction=True, isolation=expected_isolation, read_only=False)
         assert await fetch_values(pool, item_id) == ["value"]
-
-    @pytest.mark.parametrize(
-        argnames=("isolation", "expected_state"),
-        argvalues=[
-            ("read_committed", TransactionState(in_transaction=False, isolation="read committed")),
-            ("repeatable_read", TransactionState(in_transaction=True, isolation="repeatable read")),
-            ("serializable", TransactionState(in_transaction=True, isolation="serializable")),
-        ],
-    )
-    async def test_runs_read_effect_outside_transaction_only_when_isolation_is_read_committed(
-        self,
-        pool: Pool,
-        isolation: IsolationLevel,
-        expected_state: TransactionState,
-    ) -> None:
-        def handler() -> Effectful[TransactionState, Effect[Any]]:
-            return (yield from ReadTransactionStateEffect())
-
-        environment = make_environment(pool, StagedCommandDef("test", TestCommand, handler), isolation)
-
-        async with environment:
-            result = await environment.execute(TestCommand())
-
-        assert result == expected_state
-
-    @pytest.mark.parametrize(
-        argnames=("isolation", "expected_isolation"),
-        argvalues=[
-            ("read_committed", "read committed"),
-            ("repeatable_read", "repeatable read"),
-            ("serializable", "serializable"),
-        ],
-    )
-    async def test_runs_transaction_with_isolation(
-        self,
-        pool: Pool,
-        isolation: IsolationLevel,
-        expected_isolation: str,
-    ) -> None:
-        environment = make_environment(
-            pool, AtomicCommandDef("test", TestCommand, read_state_in_transaction), isolation
-        )
-
-        async with environment:
-            result = await environment.execute(TestCommand())
-
-        assert result == TransactionState(in_transaction=True, isolation=expected_isolation)
-
-    async def test_runs_transaction_of_atomic_command_with_its_options(self, pool: Pool) -> None:
-        environment = make_environment(
-            pool=pool,
-            command_def=AtomicCommandDef("test", TestCommand, read_state_in_transaction),
-            message_options={TestCommand: AsyncpgTransactionOptions(isolation="serializable")},
-        )
-
-        async with environment:
-            result = await environment.execute(TestCommand())
-
-        assert result == TransactionState(in_transaction=True, isolation="serializable")
-
-    async def test_does_not_run_transaction_with_options_of_other_command(self, pool: Pool) -> None:
-        environment = make_environment(
-            pool=pool,
-            command_def=AtomicCommandDef("test", TestCommand, read_state_in_transaction),
-            message_options={OtherCommand: AsyncpgTransactionOptions(isolation="serializable")},
-        )
-
-        async with environment:
-            result = await environment.execute(TestCommand())
-
-        assert result == TransactionState(in_transaction=True, isolation="read committed")
-
-    @pytest.mark.parametrize(
-        argnames=("effect", "expected_state"),
-        argvalues=[
-            (ReadTransactionStateEffect(), TransactionState(in_transaction=False, isolation="read committed")),
-            (WriteTransactionStateEffect(), TransactionState(in_transaction=True, isolation="serializable")),
-        ],
-    )
-    async def test_runs_only_write_effect_outside_transaction_with_options_of_command(
-        self,
-        pool: Pool,
-        effect: ReadTransactionStateEffect | WriteTransactionStateEffect,
-        expected_state: TransactionState,
-    ) -> None:
-        def handler() -> Effectful[TransactionState, Effect[Any]]:
-            return (yield from effect)
-
-        environment = make_environment(
-            pool=pool,
-            command_def=StagedCommandDef("test", TestCommand, handler),
-            message_options={TestCommand: AsyncpgTransactionOptions(isolation="serializable")},
-        )
-
-        async with environment:
-            result = await environment.execute(TestCommand())
-
-        assert result == expected_state
-
-
-def read_state_in_transaction() -> AtomicEffectful[TransactionState]:
-    yield from ()
-
-    def transaction() -> TransactionEffectful[TransactionState]:
-        return (yield from ReadTransactionStateEffect())
-
-    return transaction
-
-
-class OtherCommand(Command[str]):
-    pass
 
 
 def make_environment(
     pool: Pool,
-    command_def: AtomicCommandDef[Any] | StagedCommandDef[Any],
-    isolation: IsolationLevel = "read_committed",
-    message_options: Mapping[type[Message[Any]], AsyncpgTransactionOptions] | None = None,
+    command_defs: Collection[CommandDef[Any]] = (),
+    query_defs: Collection[QueryDef[Any]] = (),
+    connection_def: AsyncpgConnectionDef | None = None,
 ) -> EnvironmentImpl:
     # The pool outlives the environment because starting it for each test is slower.
     async def shared_pool() -> AsyncGenerator[Pool]:
         yield pool
 
     return EnvironmentImpl(
-        operation_engine=OperationEngineImpl(command_defs=[command_def]),
+        operation_engine=OperationEngineImpl(command_defs=command_defs, query_defs=query_defs),
         effect_defs=[
             EffectDef(GetItemEffect, handle_get_item),
+            EffectDef(GetItemAndChangeItConcurrentlyEffect, handle_get_item_and_change_it_concurrently),
             EffectDef(SaveItemEffect, handle_save_item),
+            EffectDef(SaveItemAsReadEffect, handle_save_item_as_read),
             EffectDef(ReadTransactionStateEffect, handle_transaction_state),
             EffectDef(WriteTransactionStateEffect, handle_transaction_state),
             EffectDef(FailEffect, handle_fail),
@@ -294,7 +460,7 @@ def make_environment(
         ],
         dependency_defs=[
             EffectDependencyDef(shared_pool),
-            AsyncpgConnectionDef(AsyncpgTransactionOptions(isolation=isolation), message_options),
+            AsyncpgConnectionDef() if connection_def is None else connection_def,
         ],
     )
 
