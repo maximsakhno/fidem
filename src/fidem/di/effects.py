@@ -6,6 +6,7 @@ from collections.abc import (
     Awaitable,
     Callable,
     Collection,
+    Iterable,
     Mapping,
     MutableMapping,
     MutableSequence,
@@ -15,6 +16,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from enum import IntEnum
 from inspect import isasyncgenfunction, iscoroutinefunction
+from itertools import chain
 from types import TracebackType
 from typing import Any, ClassVar, Final, Self
 
@@ -31,11 +33,12 @@ from fidem.di.core import (
     make_key,
     make_message_dependencies,
 )
-from fidem.effects import Effect, EffectContext
+from fidem.effects import Effect, EffectContext, TransactionContext
 from fidem.messages import Message, MessageContext
 
 EFFECT_KEY: Final = DependencyKey(name="effect", type=Effect)
 EFFECT_CONTEXT_KEY: Final = DependencyKey(name="effect_context", type=EffectContext)
+TRANSACTION_CONTEXT_KEY: Final = DependencyKey(name="transaction_context", type=TransactionContext)
 
 
 class EffectDependencyLifetime(IntEnum):
@@ -43,7 +46,8 @@ class EffectDependencyLifetime(IntEnum):
 
     APPLICATION = 0
     MESSAGE = 1
-    EFFECT = 2
+    TRANSACTION = 2
+    EFFECT = 3
 
 
 type DependencyFactory[DependencyT] = Callable[..., AsyncIterator[DependencyT]]
@@ -60,6 +64,13 @@ class EffectDependencyDef[DependencyT]:
 
 class DependencyLifetimeError(Exception):
     """A dependency requires a dependency with a narrower lifetime."""
+
+    def __init__(self, consumer: object, dependency: DependencyKey) -> None:
+        super().__init__(consumer, dependency)
+
+
+class TransactionDependencyAccessError(Exception):
+    """The handler of an effect that runs outside transactions requires a transaction dependency."""
 
     def __init__(self, consumer: object, dependency: DependencyKey) -> None:
         super().__init__(consumer, dependency)
@@ -201,8 +212,11 @@ def get_scoped_arguments(arguments: Sequence[ScopedDependencyArgument], scopes: 
 class EffectResolutionStep:
     """Resolves one dependency from the dependencies in the scopes and puts it into its scope."""
 
-    # Middlewares may run the handler concurrently, so the first call resolves a message dependency for all of them.
-    _LAZY_LIFETIMES: ClassVar[Collection[EffectDependencyLifetime]] = (EffectDependencyLifetime.MESSAGE,)
+    # Several handler calls share these scopes, even concurrently through middlewares, so the first call resolves.
+    _LAZY_LIFETIMES: ClassVar[Collection[EffectDependencyLifetime]] = (
+        EffectDependencyLifetime.MESSAGE,
+        EffectDependencyLifetime.TRANSACTION,
+    )
 
     provider: EffectProvider
     arguments: Sequence[ScopedDependencyArgument]
@@ -243,6 +257,7 @@ class EffectDependencyContainer:
     _BUILTIN_NODES: ClassVar[Mapping[Node, EffectDependencyLifetime]] = {
         Node(key=MESSAGE_KEY, narrowable=True): EffectDependencyLifetime.MESSAGE,
         Node(key=MESSAGE_CONTEXT_KEY): EffectDependencyLifetime.MESSAGE,
+        Node(key=TRANSACTION_CONTEXT_KEY): EffectDependencyLifetime.TRANSACTION,
         Node(key=EFFECT_CONTEXT_KEY): EffectDependencyLifetime.EFFECT,
     }
 
@@ -288,24 +303,39 @@ class EffectDependencyContainer:
         self,
         effect_type: type[Effect[Any]],
         handler: Callable[..., Awaitable[object]],
+        in_transaction: bool,
     ) -> PreparedEffectHandler:
         if not iscoroutinefunction(handler):
             raise UnsupportedFunctionError(handler)
         arguments = self._graph.bind(handler, get_parameters(handler), effect_type)
+        bound_providers = self._graph.collect(arguments, effect_type)
+        if not in_transaction:
+            self._check_no_transaction_dependencies(
+                chain(arguments, *(bound.arguments for bound in bound_providers)),
+            )
         return PreparedEffectHandler(
             handler=handler,
             # Application dependencies are resolved on start.
             steps=tuple(
                 self._make_step(bound.provider, bound.arguments)
-                for bound in self._graph.collect(arguments, effect_type)
+                for bound in bound_providers
                 if bound.provider.lifetime != EffectDependencyLifetime.APPLICATION
             ),
             arguments=self._scope_arguments(arguments),
         )
 
+    def _check_no_transaction_dependencies(self, arguments: Iterable[DependencyArgument]) -> None:
+        for argument in arguments:
+            if self._lifetimes[argument.key] == EffectDependencyLifetime.TRANSACTION:
+                raise TransactionDependencyAccessError(argument.consumer, argument.key)
+
     @classmethod
     def make_message_scope(cls, message: Message[Any], message_context: MessageContext) -> Scope:
         return Scope(make_message_dependencies(message, message_context))
+
+    @classmethod
+    def make_transaction_scope(cls, transaction_context: TransactionContext) -> Scope:
+        return Scope({TRANSACTION_CONTEXT_KEY: transaction_context})
 
     @classmethod
     def make_effect_scope(cls, effect: Effect[Any], effect_context: EffectContext) -> Scope:

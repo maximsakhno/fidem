@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Never
 
 from fidem.effects import (
     DatabaseEffect,
@@ -8,6 +8,7 @@ from fidem.effects import (
     Effect,
     Effectful,
     ExternalReadEffect,
+    ExternalWriteEffect,
     InternalEffect,
     ReadEffect,
 )
@@ -38,10 +39,16 @@ class Event(Message[None]):
 
 
 type MessageHandler[ResultT, EffectT: Effect[Any]] = Callable[..., Effectful[ResultT, EffectT]]
-type Transaction[ResultT, EventT: Event] = Callable[[], Effectful[ResultT, DatabaseEffect[Any] | EventT]]
-type AtomicHandler[ResultT, EventT: Event] = MessageHandler[
-    Transaction[ResultT, EventT],
-    InternalEffect[Any] | ExternalReadEffect[Any] | DatabaseReadEffect[Any],
+type TransactionEffectful[ResultT, EventT: Event = Never] = Effectful[ResultT, DatabaseEffect[Any] | EventT]
+"""The generator of a transaction of an atomic handler."""
+type Transaction[ResultT, EventT: Event = Never] = Callable[[], TransactionEffectful[ResultT, EventT]]
+type AtomicReadEffect = InternalEffect[Any] | ExternalReadEffect[Any] | DatabaseReadEffect[Any]
+"""Effects an atomic handler may yield before it returns the write."""
+type AtomicEffectful[ResultT, EventT: Event = Never] = Effectful[
+    Transaction[ResultT, EventT] | ExternalWriteEffect[ResultT],
+    AtomicReadEffect,
 ]
-type StagedHandler[ResultT, EventT: Event] = MessageHandler[ResultT, Effect[Any] | EventT]
+"""The generator of an atomic handler."""
+type AtomicHandler[ResultT, EventT: Event = Never] = Callable[..., AtomicEffectful[ResultT, EventT]]
+type StagedHandler[ResultT, EventT: Event = Never] = MessageHandler[ResultT, Effect[Any] | EventT]
 type QueryHandler[ResultT] = MessageHandler[ResultT, ReadEffect[Any]]

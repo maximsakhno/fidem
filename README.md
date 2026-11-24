@@ -20,7 +20,9 @@
 ## Пример
 
 ```python
-async def connect_database() -> AsyncGenerator[Database]: ...
+async def pool() -> AsyncGenerator[Pool]:
+    async with create_pool(DATABASE_URL) as pool:
+        yield pool
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,7 +30,7 @@ class GetUserEffect(DatabaseReadEffect[User]):
     user_id: str
 
 
-async def handle_get_user(database: Database, effect: GetUserEffect) -> User: ...
+async def handle_get_user(connection: Connection, effect: GetUserEffect) -> User: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +38,7 @@ class SaveUserEffect(DatabaseWriteEffect[User]):
     user: User
 
 
-async def handle_save_user(database: Database, effect: SaveUserEffect) -> User: ...
+async def handle_save_user(connection: Connection, effect: SaveUserEffect) -> User: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,26 +47,30 @@ class RenameUserCommand(Command[User]):
     name: str
 
 
-def rename_user(context: MessageContext, command: RenameUserCommand) -> Effectful[User, Effect[Any]]:
+def rename_user(command: RenameUserCommand) -> AtomicEffectful[User]:
     user = yield from GetUserEffect(command.user_id)
-    return (yield from SaveUserEffect(replace(user, name=command.name)))
+
+    def transaction() -> TransactionEffectful[User]:
+        return (yield from SaveUserEffect(replace(user, name=command.name)))
+
+    return transaction
 
 
 environment = EnvironmentImpl(
     operation_engine=OperationEngineImpl(
-        command_defs=[StagedCommandDef("rename_user", RenameUserCommand, rename_user)],
+        command_defs=[AtomicCommandDef("rename_user", RenameUserCommand, rename_user)],
     ),
     effect_defs=[
         EffectDef(GetUserEffect, handle_get_user),
         EffectDef(SaveUserEffect, handle_save_user),
     ],
-    dependency_defs=[EffectDependencyDef(connect_database)],
+    dependency_defs=[EffectDependencyDef(pool), AsyncpgConnectionDef()],
 )
 async with environment:
     user = await environment.execute(RenameUserCommand("u1", "Alice"), message_id="request-42")
 ```
 
-Полные примеры: [`examples/01_ephemeral_command.py`](examples/01_ephemeral_command.py), [`examples/02_dependencies.py`](examples/02_dependencies.py), [`examples/03_guards.py`](examples/03_guards.py), [`examples/04_effect_middlewares.py`](examples/04_effect_middlewares.py), [`examples/05_message_middlewares.py`](examples/05_message_middlewares.py).
+Полные примеры: [`examples/01_ephemeral_command.py`](examples/01_ephemeral_command.py), [`examples/02_dependencies.py`](examples/02_dependencies.py), [`examples/03_guards.py`](examples/03_guards.py), [`examples/04_effect_middlewares.py`](examples/04_effect_middlewares.py), [`examples/05_message_middlewares.py`](examples/05_message_middlewares.py), [`examples/06_atomic_commands.py`](examples/06_atomic_commands.py).
 
 ## Эффекты
 
@@ -132,16 +138,22 @@ async with environment:
 
 ### Atomic
 
-📋 Делает ровно одну запись, поэтому проблемы двойной записи у него нет. Выполняется в две фазы:
+✅ Делает ровно одну запись, поэтому проблемы двойной записи у него нет. Выполняется в две фазы:
 
-1. Обработчик собирает данные через `InternalEffect`, `ExternalReadEffect` и `DatabaseReadEffect`, а затем возвращает одну запись: `ExternalWriteEffect` или `Transaction`.
-2. Запись выполняется. `Transaction` yield-ит только `DatabaseEffect` и события. Всё это выполняется в одной транзакции БД, события пишутся в outbox той же транзакцией.
+1. Обработчик собирает данные через `InternalEffect`, `ExternalReadEffect` и `DatabaseReadEffect`, а затем возвращает одну запись: `ExternalWriteEffect` или `Transaction` — функцию без аргументов, которая возвращает генератор.
+2. Запись выполняется. `ExternalWriteEffect` — как обычный эффект. `Transaction` yield-ит только `DatabaseEffect` и выполняется в одной [транзакции БД](#транзакции-бд). 📋 Ещё она yield-ит события, и они пишутся в outbox той же транзакцией.
+
+- ✅ Обработчик аннотируется как `AtomicEffectful[R, E]`, а функция транзакции — как `TransactionEffectful[R, E]`, где `E` — события транзакции. Если транзакция не публикует событий, `E` не указывается.
+- ✅ Чтения первой фазы выполняются не в транзакции записи, а каждое в своей: в первой фазе бывают медленные внешние вызовы. Согласованность чтения с записью — забота обработчика, например условие в `UPDATE`.
+- ✅ Недопустимый эффект в любой фазе — ошибка фреймворка `UnsupportedEffectError`, другой результат обработчика — `UnsupportedAtomicResultError`.
+- ✅ ID эффектов записи продолжают последовательность чтений, как если бы обработчик yield-ил их сам.
+- ✅ Ошибка эффекта транзакции пробрасывается в генератор транзакции. Непойманная ошибка или ошибка коммита откатывает транзакцию и выходит из `Proceed` и `Environment.execute`.
 
 📋 Несколько записей в разные системы согласуются по паттерну transactional outbox: операция пишет в свою БД и в той же транзакции публикует события, а во внешние системы пишут обработчики этих событий.
 
 📋 Выполняется только в ephemeral-режиме: запись одна, восстанавливать после падения нечего.
 
-❓ При ошибке транзакции обработчик ретраится целиком. Надо продумать политику ретраев.
+❓ При ошибке транзакции обработчик ретраится целиком. Надо продумать политику ретраев и нужен ли ретрай одной транзакции без первой фазы.
 
 ### Query
 
@@ -154,7 +166,7 @@ async with environment:
 ### Ошибки
 
 - ✅ Если обработчик эффекта бросил исключение, оно пробрасывается в обработчик сообщения (`generator.throw`) в точке `yield from`. Его можно поймать в `try/except` и продолжить. Непойманное исключение завершает операцию и выходит из `Environment.execute`.
-- ✅ Ошибки самого фреймворка (`UnsupportedEffectError`, `EffectNotDefinedError`, неизвестная инструкция) в обработчик не пробрасываются.
+- ✅ Ошибки самого фреймворка (`UnsupportedEffectError`, `UnsupportedAtomicResultError`, `EffectNotDefinedError`, неизвестная инструкция) в обработчик не пробрасываются.
 - ✅ Если выполнение прервано (отмена, закрытие плана), генератор обработчика закрывается сразу, поэтому его `finally` и `with` отрабатывают.
 
 ## Идентификаторы и детерминизм
@@ -202,7 +214,8 @@ async with environment:
 **Инструкция** — команда движка для Environment.
 
 - ✅ `CallEffectHandlerInstruction` — вызвать обработчик эффекта. Содержит эффект, `EffectContext`, а также сообщение и `MessageContext`, которые его породили.
-- 📋 Записать в журнал, начать или закоммитить транзакцию, записать в outbox.
+- ✅ `RunTransactionInstruction` — выполнить вложенный план инструкций в одной [транзакции БД](#транзакции-бд) и вернуть его результат.
+- 📋 Записать в журнал, записать в outbox.
 
 **Environment** (✅)
 
@@ -216,7 +229,7 @@ async with environment:
 
 | Модуль                   | Содержимое                                                                                      |
 | ------------------------ | ----------------------------------------------------------------------------------------------- |
-| `fidem.effects`          | Эффекты и их категории, `EffectContext`                                                         |
+| `fidem.effects`          | Эффекты и их категории, `EffectContext`, `TransactionContext`                                   |
 | `fidem.messages`         | Сообщения, `MessageContext`, типы обработчиков сообщений                                        |
 | `fidem.operation_engine` | Объявления команд, режимы, инструкции, мидлвари сообщений, движок                               |
 | `fidem.environment`      | Объявления эффектов, мидлвари эффектов, Environment                                             |
@@ -224,6 +237,7 @@ async with environment:
 | `fidem.di.effects`       | DI обработчиков эффектов                                                                        |
 | `fidem.guards`           | Гарды                                                                                           |
 | `fidem.testing`          | Помощники для тестирования генераторов                                                          |
+| `fidem.asyncpg`          | Соединение [asyncpg](#asyncpg) в транзакции БД                                                  |
 
 ## Мидлвари
 
@@ -231,8 +245,8 @@ async with environment:
 
 ✅ Мидлварь (`EffectMiddleware`) — асинхронная функция `middleware(effect_call, call_next)`. `EffectCall` содержит сообщение, `MessageContext`, эффект и `EffectContext` из инструкции движка. `call_next()` без аргументов вызывает следующую мидлварь, а после последней — обработчик эффекта. Подменить эффект или контекст нельзя: мидлварь их только читает.
 
-- Мидлвари срабатывают до [DI](#di). Последний `call_next` создаёт EFFECT-скоуп, резолвит зависимости, вызывает обработчик эффекта и закрывает скоуп. Поэтому:
-  - каждый вызов `call_next` получает новые EFFECT-зависимости, а MESSAGE-зависимости создаются один раз на сообщение и при повторном вызове не пересоздаются;
+- Мидлвари срабатывают до [DI](#di). Последний `call_next` создаёт EFFECT-скоуп, резолвит зависимости, вызывает обработчик эффекта и закрывает скоуп. Эффекту БД вне транзакции он сначала создаёт [неявную транзакцию](#транзакции-бд). Поэтому:
+  - каждый вызов `call_next` получает новые EFFECT-зависимости и новую неявную транзакцию, а MESSAGE-зависимости создаются один раз на сообщение и при повторном вызове не пересоздаются;
   - ошибки резолва и закрытия мидлварь видит как ошибки `call_next`.
 - Мидлварь может не вызвать `call_next` (кеш, заглушка) или вызвать несколько раз (ретрай), в том числе одновременно: MESSAGE-зависимость всё равно создаётся один раз.
 - `call_next` после завершения сообщения — ошибка `ScopeClosedError`. Созданная при этом MESSAGE-зависимость сразу закрывается.
@@ -254,7 +268,7 @@ async with environment:
 - Ошибка внутренней части пробрасывается в мидлварь в точке `yield from Proceed()`, её можно поймать. [Ошибки фреймворка](#ошибки), которые не пробрасываются в обработчик, не пробрасываются и в мидлварь. При прерывании закрываются все генераторы цепочки.
 - Мидлварь регистрируется через `MessageMiddlewareDef(name, middleware)`. Имя стабильное: от него зависят ID эффектов мидлвари. Одинаковые имена в одном списке — ошибка `DuplicateMessageMiddlewareDefError`.
 - Общий список — `OperationEngineImpl(middleware_defs=...)`. Список в `StagedCommandDef(..., middleware_defs=...)` заменяет общий для этой команды, `()` — без мидлварей. Первая в списке — внешняя.
-- Мидлвари и их гарды проверяются при создании движка для всех команд, в том числе atomic. 📋 У atomic-команды `Proceed` выполняет обе фазы и возвращает результат транзакции.
+- Мидлвари и их гарды проверяются при создании движка для всех команд, в том числе atomic. У atomic-команды `Proceed` выполняет обе фазы и возвращает результат записи.
 - Настройки мидлварь получает через замыкание.
 
 **Ограничения:** мидлварь — только синхронная генераторная функция, иначе ошибка `UnsupportedFunctionError` при создании движка.
@@ -284,11 +298,12 @@ async with environment:
 | ------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `APPLICATION` | работа Environment (`async with environment:`) | на старте, параллельно: каждая зависимость — как только готовы те, от которых она зависит. Закрываются тоже параллельно, по графу в обратную сторону |
 | `MESSAGE`     | обработка одного сообщения                     | лениво, при первом эффекте, которому она нужна                                                                                                       |
+| `TRANSACTION` | одна [транзакция БД](#транзакции-бд)           | лениво, при первом эффекте транзакции, которому она нужна                                                                                            |
 | `EFFECT`      | один вызов обработчика эффекта                 | перед вызовом                                                                                                                                        |
 
-- Зависимости `MESSAGE` и `EFFECT` резолвятся последовательно, по заранее отсортированному списку: задачи asyncio на каждом эффекте снизили бы производительность. ❓ Возможно, позже можно будет выбирать последовательный или параллельный резолв.
+- Зависимости `MESSAGE`, `TRANSACTION` и `EFFECT` резолвятся последовательно, по заранее отсортированному списку: задачи asyncio на каждом эффекте снизили бы производительность. ❓ Возможно, позже можно будет выбирать последовательный или параллельный резолв.
 
-✅ **Встроенные зависимости** — сообщение, `MessageContext`, эффект и `EffectContext`. Они лежат в скоупах наравне с остальными и сопоставляются по общим правилам, поэтому фабрика может получить эффект по базовому классу (`Effect[Any]`). Исключение — сообщение: какое сообщение породит эффект, заранее неизвестно. Поэтому сообщение подходит только параметру типа `Message` или его подкласса, а подкласс проверяется в рантайме.
+✅ **Встроенные зависимости** — сообщение, `MessageContext`, `TransactionContext`, эффект и `EffectContext`. Они лежат в скоупах наравне с остальными и сопоставляются по общим правилам, поэтому фабрика может получить эффект по базовому классу (`Effect[Any]`). Исключение — сообщение: какое сообщение породит эффект, заранее неизвестно. Поэтому сообщение подходит только параметру типа `Message` или его подкласса, а подкласс проверяется в рантайме.
 
 ✅ **Ошибки**
 
@@ -306,6 +321,48 @@ async with environment:
 
 - **Один вид фабрики.** Генератор покрывает все случаи: зависимость без кода закрытия он отдаёт через `yield` и завершается. 📋 Готовый объект и асинхронную функцию сведут к генераторной хелперы вне ядра.
 - **Цена генератора.** Генератор без кода закрытия резолвится примерно за 0,9 мкс против 0,06 мкс у асинхронной функции. На фоне I/O обработчиков эффектов разница незаметна. Если станет мешать, ядро сможет вызывать функцию из хелпера напрямую, не меняя API.
+
+## Транзакции БД
+
+✅ Ядро не привязано к БД, драйверу и ORM. Транзакция — это скоуп DI `TRANSACTION`, а begin, commit и rollback делает фабрика этого скоупа: она видит ошибку, с которой скоуп завершился. Обработчик эффекта получает от фабрики объект драйвера как есть, например `asyncpg.Connection`. В той же транзакции можно построить и свои зависимости, например сессию ORM или репозитории.
+
+```python
+async def connection(pool: Pool) -> AsyncGenerator[Connection]:
+    async with pool.acquire() as connection, connection.transaction():
+        yield connection
+
+
+dependency_defs = [EffectDependencyDef(connection, lifetime=EffectDependencyLifetime.TRANSACTION)]
+```
+
+- **Явная транзакция** — `Transaction` [atomic-команды](#atomic). Движок yield-ит `RunTransactionInstruction`, Environment открывает скоуп, выполняет вложенный план и закрывает скоуп с ошибкой, с которой тот завершился. Поэтому транзакция откатывается и при ошибке, и при отмене. Ошибка коммита возвращается в план как ошибка инструкции.
+- **Неявная транзакция** — у `DatabaseEffect` вне явной: скоуп на один вызов обработчика, внутри последнего `call_next` [мидлварей эффекта](#мидлвари-эффектов). Поэтому ретрай мидлварью получает новую транзакцию. Ошибка закрытия скоупа — ошибка эффекта.
+- Транзакция без эффектов, которым нужны её зависимости, соединение не берёт.
+- `TransactionContext(read_only)` — встроенная зависимость скоупа. `read_only` истинно у неявной транзакции вокруг `DatabaseReadEffect`, и фабрика может не открывать для неё транзакцию БД: при read committed каждый запрос и так видит свой снимок.
+- Зависимости скоупа `TRANSACTION`, в том числе `TransactionContext`, доступны только обработчикам `DatabaseEffect`, напрямую или через `EFFECT`-зависимости. Иначе ошибка `TransactionDependencyAccessError` при создании Environment. Пул соединений — обычная зависимость, его так не ограничить.
+- Вложенная транзакция — ошибка `NotImplementedError`: она взяла бы другое соединение.
+
+**Ограничения:** ретрай отдельного эффекта мидлварью эффекта внутри явной транзакции повторяет его в той же транзакции, а в PostgreSQL транзакция после ошибки запроса уже сломана. Ретраить надо команду целиком, мидлварью сообщения. ❓ Savepoint-ы. ❓ Где открывать неявную транзакцию в durable-режиме, чтобы запись эффекта и запись журнала шли одной транзакцией.
+
+### asyncpg
+
+✅ `fidem[asyncpg]` ставит фреймворк с asyncpg. `AsyncpgConnectionDef` объявляет зависимость `asyncpg.Connection` скоупа `TRANSACTION`: соединение берётся из зависимости `asyncpg.Pool` и работает в транзакции с настройками `AsyncpgTransactionOptions`, пока это только уровень изоляции. Пул приложение объявляет своей фабрикой: она зависит от его настроек.
+
+```python
+AsyncpgConnectionDef(
+    options=AsyncpgTransactionOptions(isolation="read_committed"),
+    message_options={TransferCommand: AsyncpgTransactionOptions(isolation="serializable")},
+)
+```
+
+- `options` — настройки по умолчанию, `message_options` — настройки транзакций сообщения, тип которого совпадает точно. Настройки драйвера живут в его объявлении, а не в объявлении команды: ядро о них не знает.
+- Настройки сообщения действуют во всех его транзакциях, кроме неявных транзакций чтения: такая транзакция обёрнута вокруг одного чтения, а настройки сообщения нужны его записям.
+- Неявная транзакция чтения при read committed не открывается.
+- Транзакцию фабрика открывает и коммитит SQL-командами. Коммит транзакции, в которой упал запрос, PostgreSQL молча превращает в откат. Тогда фабрика бросает `TransactionRolledBackError`, а не сообщает об успехе. `Connection.transaction()` asyncpg этого не замечает.
+
+**Ограничения:** внутри транзакции фабрики обработчик не может вызвать `connection.transaction()`, asyncpg запрещает его в транзакции, открытой SQL-командой. Savepoint — SQL-командой.
+
+Из пула под типом `Connection` приходит `PoolConnectionProxy`: он передаёт всё соединению, и asyncpg описывает его как соединение.
 
 ## Гарды
 

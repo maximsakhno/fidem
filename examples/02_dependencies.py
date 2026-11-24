@@ -58,12 +58,20 @@ class Transaction:
             await self._database.save_user(user)
 
 
-class EffectLog:
+class Log:
     def __init__(self, prefix: str) -> None:
         self._prefix: str = prefix
 
     def write(self, message: str) -> None:
         print(f"{self._prefix} {message}")
+
+
+class MessageLog(Log):
+    pass
+
+
+class EffectLog(Log):
+    pass
 
 
 USERS: MutableMapping[str, User] = {"u1": User(id="u1", name="Alice")}
@@ -87,17 +95,27 @@ async def replica(settings: Settings) -> AsyncGenerator[Database]:
     print(f"[app] disconnecting from {settings.replica_url}")
 
 
-# The transaction lives while the message is handled and sees the error that ended it.
-async def transaction(primary: Database, message_context: MessageContext) -> AsyncGenerator[Transaction]:
-    print(f"[message {message_context.message_id}] begin")
+# The log lives while the message is handled.
+async def message_log(message_context: MessageContext) -> AsyncGenerator[MessageLog]:
+    log = MessageLog(f"[message {message_context.message_id}]")
+    log.write("start")
+    try:
+        yield log
+    finally:
+        log.write("end")
+
+
+# The transaction lives while its database effects run and sees the error that ended it.
+async def transaction(primary: Database, log: MessageLog) -> AsyncGenerator[Transaction]:
+    log.write("begin")
     transaction = Transaction(primary)
     try:
         yield transaction
     except Exception:
-        print(f"[message {message_context.message_id}] rollback")
+        log.write("rollback")
         raise
     await transaction.commit()
-    print(f"[message {message_context.message_id}] commit")
+    log.write("commit")
 
 
 # A factory may depend on the effect through any of its base classes.
@@ -122,9 +140,12 @@ async def handle_get_user(replica: Database, effect: GetUserEffect, log: EffectL
     return await replica.get_user(effect.user_id)
 
 
+# Only handlers of database effects may depend on the transaction.
 async def handle_save_user(effect: SaveUserEffect, transaction: Transaction, log: EffectLog) -> User:
     log.write(f"saving user {effect.user.id} in the transaction")
     transaction.save_user(effect.user)
+    if not effect.user.name:
+        raise ValueError("The name must not be empty")
     return effect.user
 
 
@@ -137,10 +158,7 @@ class RenameUserCommand(Command[User]):
 
 def rename_user(context: MessageContext, command: RenameUserCommand) -> Effectful[User, Effect[Any]]:
     user = yield from GetUserEffect(command.user_id)
-    saved_user = yield from SaveUserEffect(replace(user, name=command.name))
-    if not command.name:
-        raise ValueError("The name must not be empty")
-    return saved_user
+    return (yield from SaveUserEffect(replace(user, name=command.name)))
 
 
 async def main() -> None:
@@ -156,7 +174,8 @@ async def main() -> None:
             EffectDependencyDef(settings),
             EffectDependencyDef(primary, name="primary"),
             EffectDependencyDef(replica, name="replica"),
-            EffectDependencyDef(transaction, lifetime=EffectDependencyLifetime.MESSAGE),
+            EffectDependencyDef(message_log, lifetime=EffectDependencyLifetime.MESSAGE),
+            EffectDependencyDef(transaction, lifetime=EffectDependencyLifetime.TRANSACTION),
             EffectDependencyDef(effect_log, lifetime=EffectDependencyLifetime.EFFECT),
         ],
     )
