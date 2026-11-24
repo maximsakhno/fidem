@@ -3,12 +3,11 @@ from collections.abc import AsyncGenerator, MutableMapping
 from dataclasses import dataclass
 from itertools import count
 from time import perf_counter
-from typing import Any
 
 from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
-from fidem.effects import Effect, Effectful, ExternalReadEffect, InternalEffect
+from fidem.effects import ExternalReadEffect, InternalEffect
 from fidem.environment import CallNext, EffectCall, EffectDef, EffectMiddlewareDef, EnvironmentImpl
-from fidem.messages import Command
+from fidem.messages import Command, StagedEffectful
 from fidem.operation_engine import OperationEngineImpl, StagedCommandDef
 
 
@@ -89,7 +88,7 @@ class ConvertCommand(Command[str]):
     currency: str
 
 
-def convert(command: ConvertCommand) -> Effectful[str, Effect[Any]]:
+def convert(command: ConvertCommand) -> StagedEffectful[str]:
     greeting = yield from GetGreetingEffect()
     rate = yield from GetRateEffect(command.currency)
     return f"{greeting}! {command.amount} USD = {command.amount / rate:.2f} {command.currency}"

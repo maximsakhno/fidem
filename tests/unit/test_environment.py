@@ -12,7 +12,7 @@ from fidem.di.effects import (
     EffectDependencyLifetime,
     ScopeClosedError,
 )
-from fidem.effects import Effect, EffectContext, Effectful, InternalEffect, TransactionContext
+from fidem.effects import Effect, EffectContext, Effectful, InternalEffect
 from fidem.environment import (
     CallNext,
     DuplicateEffectDefError,
@@ -24,8 +24,8 @@ from fidem.environment import (
     EnvironmentImpl,
     EnvironmentNotStartedError,
 )
-from fidem.guards import GuardDef, GuardEffect
-from fidem.messages import AtomicEffectful, Command, MessageContext, TransactionEffectful
+from fidem.guards import GuardDef
+from fidem.messages import AtomicEffectful, Command, MessageContext, QueryEffect
 from fidem.operation_engine import (
     AtomicCommandDef,
     CallEffectHandlerInstruction,
@@ -38,9 +38,15 @@ from fidem.operation_engine import (
     StagedCommandDef,
 )
 from fidem.testing import YeildStep
+from fidem.transactions import (
+    TransactionContext,
+    WriteTransaction,
+    WriteTransactionEffectful,
+)
 from tests.effects import TestDatabaseReadEffect, TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
-from tests.messages import TestCommand
+from tests.messages import TestCommand, TestQuery
 from tests.stubs import GeneratorFunctionStub
+from tests.transactions import read_transaction, write_transaction
 
 
 class Resource:
@@ -275,6 +281,62 @@ class TestExecuteWithOperationEngine:
         assert len(set(effect_ids)) == 2
 
 
+class TestExecuteQuery:
+    async def test_passes_query_and_message_context_into_operation_engine_and_returns_plan_result(self) -> None:
+        query = TestQuery()
+        operation_engine_mock = make_operation_engine_mock(
+            query_plan=GeneratorFunctionStub(return_value="query_result")
+        )
+
+        async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
+            result = await environment.query(query, "test_message_id")
+
+        assert result == "query_result"
+        operation_engine_mock.query.assert_called_once_with(
+            query=query,
+            message_context=MessageContext(message_id="test_message_id"),
+        )
+        operation_engine_mock.execute.assert_not_called()
+
+    async def test_passes_query_into_effect_handler_and_sends_its_result_into_query_plan(self) -> None:
+        async def handler(message: TestQuery) -> str:
+            messages.append(message)
+            return "effect_result"
+
+        def query_plan(query: TestQuery, message_context: MessageContext) -> ExecutionPlan[object]:
+            return (yield make_instruction())
+
+        messages: MutableSequence[TestQuery] = []
+        query = TestQuery()
+        environment = EnvironmentImpl(
+            operation_engine=make_operation_engine_mock(query_plan=query_plan),
+            effect_defs=[EffectDef(TestInternalEffect, handler)],
+        )
+
+        async with environment:
+            result = await environment.query(query)
+
+        assert result == "effect_result"
+        assert messages == [query]
+        assert messages[0] is query
+
+    async def test_generates_different_message_ids_when_message_id_not_passed(self) -> None:
+        operation_engine_mock = make_operation_engine_mock(query_plan=GeneratorFunctionStub())
+
+        async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
+            await environment.query(TestQuery())
+            await environment.query(TestQuery())
+
+        message_ids = {call.kwargs["message_context"].message_id for call in operation_engine_mock.query.call_args_list}
+        assert len(message_ids) == 2
+
+    async def test_raises_environment_not_started_error_when_queries_before_start(self) -> None:
+        environment = EnvironmentImpl(operation_engine=make_operation_engine_mock(query_plan=GeneratorFunctionStub()))
+
+        with pytest.raises(EnvironmentNotStartedError):
+            await environment.query(TestQuery())
+
+
 class TestTransactions:
     async def test_runs_effects_of_transaction_with_one_connection_and_returns_its_result(self) -> None:
         def transaction_plan() -> ExecutionPlan[object]:
@@ -374,7 +436,7 @@ class TestTransactions:
 
     async def test_raises_not_implemented_error_when_transaction_is_nested(self) -> None:
         def transaction_plan() -> ExecutionPlan[object]:
-            return (yield RunTransactionInstruction(plan=write_plan()))
+            return (yield RunTransactionInstruction(transaction=write_transaction, plan=write_plan()))
 
         environment = self._make_environment(
             operation_engine=make_operation_engine_mock(self._in_transaction(transaction_plan)),
@@ -439,15 +501,15 @@ class TestTransactions:
         assert connections[0] is not connections[1]
 
     async def test_executes_atomic_command_with_reads_outside_transaction(self) -> None:
+        @WriteTransaction
+        def transaction(read_result: str) -> WriteTransactionEffectful[str]:
+            first_result = yield from TestDatabaseWriteEffect()
+            second_result = yield from TestDatabaseWriteEffect()
+            return f"{read_result} {first_result} {second_result}"
+
         def handler() -> AtomicEffectful[str]:
             read_result = yield from TestDatabaseReadEffect()
-
-            def transaction() -> TransactionEffectful[str]:
-                first_result = yield from TestDatabaseWriteEffect()
-                second_result = yield from TestDatabaseWriteEffect()
-                return f"{read_result} {first_result} {second_result}"
-
-            return transaction
+            return transaction(read_result)
 
         events: MutableSequence[str] = []
         connections: MutableSequence[Connection] = []
@@ -464,6 +526,35 @@ class TestTransactions:
         assert events == ["begin read_only=True", "commit", "begin read_only=False", "commit"]
         assert connections[0] is not connections[1]
         assert connections[1] is connections[2]
+
+    async def test_passes_transaction_context_of_each_transaction_kind_into_factory(self) -> None:
+        async def connection(transaction_context: TransactionContext) -> AsyncGenerator[Connection]:
+            transaction_contexts.append(transaction_context)
+            yield Connection()
+
+        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
+            yield make_instruction(TestDatabaseReadEffect())
+            yield make_instruction(TestDatabaseWriteEffect())
+            yield RunTransactionInstruction(transaction=read_transaction, plan=read_plan())
+            yield RunTransactionInstruction(transaction=write_transaction, plan=write_plan())
+            return "command_result"
+
+        transaction_contexts: MutableSequence[TransactionContext] = []
+        environment = self._make_environment(
+            operation_engine=make_operation_engine_mock(execution_plan),
+            handler=self._make_handler([]),
+            connection_def=EffectDependencyDef(connection, lifetime=EffectDependencyLifetime.TRANSACTION),
+        )
+
+        async with environment:
+            await environment.execute(TestCommand())
+
+        assert transaction_contexts == [
+            TransactionContext(read_only=True, transaction=None),
+            TransactionContext(read_only=False, transaction=None),
+            TransactionContext(read_only=True, transaction=read_transaction),
+            TransactionContext(read_only=False, transaction=write_transaction),
+        ]
 
     @staticmethod
     def _make_environment(
@@ -487,7 +578,7 @@ class TestTransactions:
 
         def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
             try:
-                return (yield RunTransactionInstruction(plan=plan()))
+                return (yield RunTransactionInstruction(transaction=write_transaction, plan=plan()))
             except ValueError as exc:
                 return str(exc)
 
@@ -855,7 +946,7 @@ class TestEffectHandlerDependencies:
 
 class TestGuards:
     async def test_executes_guard_effects_before_handler(self) -> None:
-        def config(context: MessageContext) -> Effectful[Config, GuardEffect]:
+        def config(context: MessageContext) -> Effectful[Config, QueryEffect]:
             return Config(f"{context.message_id} {(yield from TestInternalEffect())}")
 
         async def handle_internal(message_context: MessageContext) -> str:
@@ -1115,7 +1206,7 @@ class TestEffectMiddlewares:
             effects.append(effect_call.effect)
             return await call_next()
 
-        def config() -> Effectful[Config, GuardEffect]:
+        def config() -> Effectful[Config, QueryEffect]:
             return Config((yield from TestInternalEffect()))
 
         async def handle_internal() -> str:
@@ -1285,9 +1376,13 @@ class TestEffectMiddlewares:
             return str(exc)
 
 
-def make_operation_engine_mock(execution_plan: Callable[..., ExecutionPlan[Any]] | None = None) -> Mock:
+def make_operation_engine_mock(
+    execution_plan: Callable[..., ExecutionPlan[Any]] | None = None,
+    query_plan: Callable[..., ExecutionPlan[Any]] | None = None,
+) -> Mock:
     operation_engine_mock = Mock(spec=OperationEngine)
     operation_engine_mock.execute.side_effect = execution_plan
+    operation_engine_mock.query.side_effect = query_plan
     return operation_engine_mock
 
 
@@ -1305,6 +1400,10 @@ def make_instruction(
 
 def write_plan() -> ExecutionPlan[object]:
     return (yield make_instruction(TestDatabaseWriteEffect()))
+
+
+def read_plan() -> ExecutionPlan[object]:
+    return (yield make_instruction(TestDatabaseReadEffect()))
 
 
 def make_failing_handler(error: Exception) -> Callable[..., Any]:

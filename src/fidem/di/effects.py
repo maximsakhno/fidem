@@ -33,8 +33,26 @@ from fidem.di.core import (
     make_key,
     make_message_dependencies,
 )
-from fidem.effects import Effect, EffectContext, TransactionContext
+from fidem.effects import Effect, EffectContext
 from fidem.messages import Message, MessageContext
+from fidem.transactions import TransactionContext
+
+__all__ = [
+    "EFFECT_CONTEXT_KEY",
+    "EFFECT_KEY",
+    "TRANSACTION_CONTEXT_KEY",
+    "DependencyFactory",
+    "DependencyLifetimeError",
+    "EffectDependencyContainer",
+    "EffectDependencyDef",
+    "EffectDependencyLifetime",
+    "EffectProvider",
+    "PreparedEffectHandler",
+    "Scope",
+    "ScopeClosedError",
+    "Scopes",
+    "TransactionDependencyAccessError",
+]
 
 EFFECT_KEY: Final = DependencyKey(name="effect", type=Effect)
 EFFECT_CONTEXT_KEY: Final = DependencyKey(name="effect_context", type=EffectContext)

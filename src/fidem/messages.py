@@ -1,17 +1,33 @@
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Never
+from typing import Any, Final, Never
 
 from fidem.effects import (
-    DatabaseEffect,
     DatabaseReadEffect,
     Effect,
     Effectful,
     ExternalReadEffect,
     ExternalWriteEffect,
     InternalEffect,
-    ReadEffect,
 )
+from fidem.transactions import ReadTransactionEffect, WriteTransactionEffect
+
+__all__ = [
+    "QUERY_EFFECT_TYPES",
+    "AtomicEffectful",
+    "AtomicHandler",
+    "Command",
+    "Event",
+    "Message",
+    "MessageContext",
+    "MessageId",
+    "Query",
+    "QueryEffect",
+    "QueryEffectful",
+    "QueryHandler",
+    "StagedEffectful",
+    "StagedHandler",
+]
 
 
 class Message[ResultT](Effect[ResultT]):
@@ -38,17 +54,24 @@ class Event(Message[None]):
     pass
 
 
-type MessageHandler[ResultT, EffectT: Effect[Any]] = Callable[..., Effectful[ResultT, EffectT]]
-type TransactionEffectful[ResultT, EventT: Event = Never] = Effectful[ResultT, DatabaseEffect[Any] | EventT]
-"""The generator of a transaction of an atomic handler."""
-type Transaction[ResultT, EventT: Event = Never] = Callable[[], TransactionEffectful[ResultT, EventT]]
-type AtomicReadEffect = InternalEffect[Any] | ExternalReadEffect[Any] | DatabaseReadEffect[Any]
-"""Effects an atomic handler may yield before it returns the write."""
+type QueryEffect = InternalEffect[Any] | ExternalReadEffect[Any] | DatabaseReadEffect[Any] | ReadTransactionEffect[Any]
+"""Effects that only read, which a query handler, a guard and the first phase of an atomic handler may yield."""
+QUERY_EFFECT_TYPES: Final[tuple[type[Effect[Any]], ...]] = (
+    InternalEffect,
+    ExternalReadEffect,
+    DatabaseReadEffect,
+    ReadTransactionEffect,
+)
+"""Runtime counterpart of `QueryEffect`."""
+type QueryEffectful[ResultT] = Effectful[ResultT, QueryEffect]
+"""The generator of a query handler."""
+type QueryHandler[ResultT] = Callable[..., QueryEffectful[ResultT]]
 type AtomicEffectful[ResultT, EventT: Event = Never] = Effectful[
-    Transaction[ResultT, EventT] | ExternalWriteEffect[ResultT],
-    AtomicReadEffect,
+    WriteTransactionEffect[ResultT, EventT] | ExternalWriteEffect[ResultT],
+    QueryEffect,
 ]
 """The generator of an atomic handler."""
 type AtomicHandler[ResultT, EventT: Event = Never] = Callable[..., AtomicEffectful[ResultT, EventT]]
-type StagedHandler[ResultT, EventT: Event = Never] = MessageHandler[ResultT, Effect[Any] | EventT]
-type QueryHandler[ResultT] = MessageHandler[ResultT, ReadEffect[Any]]
+type StagedEffectful[ResultT, EventT: Event = Never] = Effectful[ResultT, Effect[Any] | EventT]
+"""The generator of a staged handler, `EventT` are the events it publishes."""
+type StagedHandler[ResultT, EventT: Event = Never] = Callable[..., StagedEffectful[ResultT, EventT]]

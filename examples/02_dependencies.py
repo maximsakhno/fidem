@@ -5,9 +5,9 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
-from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, EffectContext, Effectful
+from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, EffectContext
 from fidem.environment import EffectDef, EnvironmentImpl
-from fidem.messages import Command, MessageContext
+from fidem.messages import Command, MessageContext, StagedEffectful
 from fidem.operation_engine import OperationEngineImpl, StagedCommandDef
 
 
@@ -156,7 +156,7 @@ class RenameUserCommand(Command[User]):
     name: str
 
 
-def rename_user(context: MessageContext, command: RenameUserCommand) -> Effectful[User, Effect[Any]]:
+def rename_user(context: MessageContext, command: RenameUserCommand) -> StagedEffectful[User]:
     user = yield from GetUserEffect(command.user_id)
     return (yield from SaveUserEffect(replace(user, name=command.name)))
 

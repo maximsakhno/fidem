@@ -1,10 +1,9 @@
 from asyncio import run
 from dataclasses import dataclass
-from typing import Any
 
-from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, EffectContext, Effectful
+from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, EffectContext
 from fidem.environment import EffectDef, EnvironmentImpl
-from fidem.messages import Command, MessageContext
+from fidem.messages import Command, MessageContext, StagedEffectful
 from fidem.operation_engine import OperationEngineImpl, StagedCommandDef
 
 
@@ -111,7 +110,7 @@ class PlaceOrderCommand(Command[Order]):
     quantity: int
 
 
-def place_order_handler(ctx: MessageContext, cmd: PlaceOrderCommand) -> Effectful[Order, Effect[Any]]:
+def place_order_handler(ctx: MessageContext, cmd: PlaceOrderCommand) -> StagedEffectful[Order]:
     user = yield from GetUserEffect(cmd.user_id)
     product = yield from CheckStockEffect(cmd.product_id)
 

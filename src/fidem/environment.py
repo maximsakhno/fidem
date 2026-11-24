@@ -17,8 +17,8 @@ from fidem.di.effects import (
     Scope,
     Scopes,
 )
-from fidem.effects import DatabaseEffect, Effect, EffectContext, ReadEffect, TransactionContext
-from fidem.messages import Command, Message, MessageContext, MessageId
+from fidem.effects import DatabaseEffect, Effect, EffectContext, ReadEffect
+from fidem.messages import Command, Message, MessageContext, MessageId, Query
 from fidem.operation_engine import (
     CallEffectHandlerInstruction,
     ExecutionPlan,
@@ -26,6 +26,21 @@ from fidem.operation_engine import (
     OperationEngine,
     RunTransactionInstruction,
 )
+from fidem.transactions import AnyTransaction, TransactionContext
+
+__all__ = [
+    "CallNext",
+    "DuplicateEffectDefError",
+    "EffectCall",
+    "EffectDef",
+    "EffectMiddleware",
+    "EffectMiddlewareDef",
+    "EffectNotDefinedError",
+    "Environment",
+    "EnvironmentAlreadyStartedError",
+    "EnvironmentImpl",
+    "EnvironmentNotStartedError",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +77,14 @@ class Environment(AbstractAsyncContextManager["Environment", None], ABC):
     ) -> ResultT:
         raise NotImplementedError
 
+    @abstractmethod
+    async def query[ResultT](
+        self,
+        query: Query[ResultT],
+        message_id: MessageId | None = None,
+    ) -> ResultT:
+        raise NotImplementedError
+
 
 class DuplicateEffectDefError(Exception):
     def __init__(self, effect_defs: Collection[EffectDef[Any]]) -> None:
@@ -82,7 +105,7 @@ class EnvironmentAlreadyStartedError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
-class _PreparedEffect:
+class PreparedEffect:
     handler: PreparedEffectHandler
     middlewares: Sequence[EffectMiddleware]
     implicit_transaction_context: TransactionContext | None
@@ -90,8 +113,14 @@ class _PreparedEffect:
 
 
 class EnvironmentImpl(Environment):
-    _TRANSACTION_CONTEXT: ClassVar[TransactionContext] = TransactionContext(read_only=False)
-    _READ_ONLY_TRANSACTION_CONTEXT: ClassVar[TransactionContext] = TransactionContext(read_only=True)
+    _IMPLICIT_WRITE_TRANSACTION_CONTEXT: ClassVar[TransactionContext] = TransactionContext(
+        read_only=False,
+        transaction=None,
+    )
+    _IMPLICIT_READ_TRANSACTION_CONTEXT: ClassVar[TransactionContext] = TransactionContext(
+        read_only=True,
+        transaction=None,
+    )
     _NO_TRANSACTION_SCOPE: ClassVar[Scope] = Scope({})
 
     def __init__(
@@ -107,7 +136,7 @@ class EnvironmentImpl(Environment):
             dependency_defs=dependency_defs,
             effect_types=tuple(type_to_effect_def),
         )
-        self._type_to_effect: Mapping[type[Effect[Any]], _PreparedEffect] = {
+        self._type_to_effect: Mapping[type[Effect[Any]], PreparedEffect] = {
             effect_type: self._prepare_effect(effect_def, effect_middleware_defs)
             for effect_type, effect_def in type_to_effect_def.items()
         }
@@ -134,13 +163,13 @@ class EnvironmentImpl(Environment):
         self,
         effect_def: EffectDef[Any],
         effect_middleware_defs: Sequence[EffectMiddlewareDef],
-    ) -> _PreparedEffect:
+    ) -> PreparedEffect:
         middleware_defs = effect_middleware_defs if effect_def.middleware_defs is None else effect_def.middleware_defs
         for middleware_def in middleware_defs:
             if not iscoroutinefunction(middleware_def.middleware):
                 raise UnsupportedFunctionError(middleware_def.middleware)
         implicit_transaction_context = self._get_implicit_transaction_context(effect_def.effect_type)
-        return _PreparedEffect(
+        return PreparedEffect(
             handler=self._dependency_container.prepare_effect_handler(
                 effect_type=effect_def.effect_type,
                 handler=effect_def.handler,
@@ -155,8 +184,8 @@ class EnvironmentImpl(Environment):
         if not issubclass(effect_type, DatabaseEffect):
             return None
         if issubclass(effect_type, ReadEffect):
-            return cls._READ_ONLY_TRANSACTION_CONTEXT
-        return cls._TRANSACTION_CONTEXT
+            return cls._IMPLICIT_READ_TRANSACTION_CONTEXT
+        return cls._IMPLICIT_WRITE_TRANSACTION_CONTEXT
 
     async def __aenter__(self) -> Self:
         if self._application_scope is not None:
@@ -184,15 +213,37 @@ class EnvironmentImpl(Environment):
         command: Command[ResultT],
         message_id: MessageId | None = None,
     ) -> ResultT:
-        application_scope = self._get_application_scope()
-        if message_id is None:
-            message_id = uuid4().hex
-        message_context = MessageContext(message_id=message_id)
-        execution_plan = self._operation_engine.execute(
-            command=command,
+        message_context = self._make_message_context(message_id)
+        return await self._run_message(
+            message=command,
             message_context=message_context,
+            execution_plan=self._operation_engine.execute(command=command, message_context=message_context),
         )
-        async with self._dependency_container.make_message_scope(command, message_context) as message_scope:
+
+    async def query[ResultT](
+        self,
+        query: Query[ResultT],
+        message_id: MessageId | None = None,
+    ) -> ResultT:
+        message_context = self._make_message_context(message_id)
+        return await self._run_message(
+            message=query,
+            message_context=message_context,
+            execution_plan=self._operation_engine.query(query=query, message_context=message_context),
+        )
+
+    @classmethod
+    def _make_message_context(cls, message_id: MessageId | None) -> MessageContext:
+        return MessageContext(message_id=uuid4().hex if message_id is None else message_id)
+
+    async def _run_message[ResultT](
+        self,
+        message: Message[ResultT],
+        message_context: MessageContext,
+        execution_plan: ExecutionPlan[ResultT],
+    ) -> ResultT:
+        application_scope = self._get_application_scope()
+        async with self._dependency_container.make_message_scope(message, message_context) as message_scope:
             return await self._run_execution_plan(execution_plan, (application_scope, message_scope))
 
     async def _run_execution_plan[ResultT](
@@ -242,22 +293,36 @@ class EnvironmentImpl(Environment):
             return call_next
         # A nested transaction would silently take another connection instead of joining the transaction.
         if isinstance(instruction, RunTransactionInstruction) and transaction_scope is None:
-            return partial(self._run_transaction, plan=instruction.plan, scopes=scopes)
+            return partial(
+                self._run_transaction,
+                transaction=instruction.transaction,
+                plan=instruction.plan,
+                scopes=scopes,
+            )
         raise NotImplementedError(instruction)
 
-    def _get_effect(self, effect_type: type[Effect[Any]]) -> _PreparedEffect:
+    def _get_effect(self, effect_type: type[Effect[Any]]) -> PreparedEffect:
         prepared_effect = self._type_to_effect.get(effect_type)
         if prepared_effect is None:
             raise EffectNotDefinedError(effect_type)
         return prepared_effect
 
-    async def _run_transaction(self, plan: ExecutionPlan[Any], scopes: Scopes) -> object:
-        async with self._dependency_container.make_transaction_scope(self._TRANSACTION_CONTEXT) as transaction_scope:
+    async def _run_transaction(
+        self,
+        transaction: AnyTransaction,
+        plan: ExecutionPlan[Any],
+        scopes: Scopes,
+    ) -> object:
+        transaction_context = TransactionContext(
+            read_only=transaction.read_only,
+            transaction=transaction,
+        )
+        async with self._dependency_container.make_transaction_scope(transaction_context) as transaction_scope:
             return await self._run_execution_plan(plan, scopes, transaction_scope)
 
     async def _call_effect_handler(
         self,
-        prepared_effect: _PreparedEffect,
+        prepared_effect: PreparedEffect,
         effect_call: EffectCall,
         scopes: Scopes,
         transaction_scope: Scope | None,

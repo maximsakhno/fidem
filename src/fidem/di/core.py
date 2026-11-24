@@ -2,10 +2,35 @@ from collections import defaultdict
 from collections.abc import Callable, Collection, Mapping, MutableMapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
-from inspect import Parameter, Signature, signature
+from inspect import Parameter, Signature, isgeneratorfunction, signature
 from typing import Any, Final, get_args, get_origin
 
 from fidem.messages import Message, MessageContext
+
+__all__ = [
+    "MESSAGE_CONTEXT_KEY",
+    "MESSAGE_KEY",
+    "AmbiguousDependencyError",
+    "BoundProvider",
+    "DependencyArgument",
+    "DependencyCycleError",
+    "DependencyGraph",
+    "DependencyKey",
+    "DependencyNotFoundError",
+    "DuplicateDependencyError",
+    "MissingAnnotationError",
+    "Node",
+    "Provider",
+    "UnresolvedAnnotationError",
+    "UnsupportedFunctionError",
+    "UnsupportedParameterError",
+    "UnsupportedReturnTypeError",
+    "check_generator_function",
+    "get_arguments",
+    "get_parameters",
+    "make_key",
+    "make_message_dependencies",
+]
 
 
 @dataclass(slots=True, frozen=True)
@@ -21,6 +46,11 @@ MESSAGE_CONTEXT_KEY: Final = DependencyKey(name="message_context", type=MessageC
 class UnsupportedFunctionError(Exception):
     def __init__(self, function: Callable[..., object]) -> None:
         super().__init__(function)
+
+
+def check_generator_function(function: Callable[..., object]) -> None:
+    if not isgeneratorfunction(function):
+        raise UnsupportedFunctionError(function)
 
 
 class UnsupportedParameterError(Exception):
@@ -147,7 +177,7 @@ class Node:
     """The node matches its type and its subclasses but not its bases, the exact type is checked at runtime."""
 
 
-type _Index = Mapping[object, Sequence[Node]]
+type Index = Mapping[object, Sequence[Node]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +201,7 @@ class DependencyGraph[ProviderT: Provider]:
         self._subject_node: Node = Node(key=subject_key)
         self._builtin_nodes: Collection[Node] = builtin_nodes
         self.providers: Final[Mapping[DependencyKey, ProviderT]] = self._make_key_to_provider(providers)
-        self._index: _Index = self._make_index()
+        self._index: Index = self._make_index()
         index = self._add_subject_to_index(subject_types)
         self.arguments: Final[Mapping[DependencyKey, Sequence[DependencyArgument]]] = {
             key: self._bind_parameters(key, provider.parameters, index) for key, provider in self.providers.items()
@@ -190,7 +220,7 @@ class DependencyGraph[ProviderT: Provider]:
             key_to_provider[provider.key] = provider
         return key_to_provider
 
-    def _make_index(self) -> _Index:
+    def _make_index(self) -> Index:
         """Maps each type to the nodes a parameter of this type matches."""
         index: MutableMapping[object, MutableSequence[Node]] = defaultdict(list)
         for node in [*(Node(key=key) for key in self.providers), *self._builtin_nodes]:
@@ -198,7 +228,7 @@ class DependencyGraph[ProviderT: Provider]:
                 index[base].append(node)
         return index
 
-    def _add_subject_to_index(self, subject_types: Collection[type]) -> _Index:
+    def _add_subject_to_index(self, subject_types: Collection[type]) -> Index:
         subject_index: MutableMapping[object, Sequence[Node]] = dict(self._index)
         for base in {base for subject_type in subject_types for base in self._get_classes(subject_type)}:
             subject_index[base] = (*self._index.get(base, ()), self._subject_node)
@@ -224,7 +254,7 @@ class DependencyGraph[ProviderT: Provider]:
         self,
         consumer: object,
         parameters: Mapping[str, object],
-        index: _Index,
+        index: Index,
     ) -> Sequence[DependencyArgument]:
         return tuple(
             self._bind_parameter(
@@ -241,7 +271,7 @@ class DependencyGraph[ProviderT: Provider]:
         consumer: object,
         parameter: str,
         parameter_type: object,
-        index: _Index,
+        index: Index,
     ) -> DependencyArgument:
         parameter_type = self._normalize_type(parameter_type)
         exact_candidates = index.get(parameter_type, ())

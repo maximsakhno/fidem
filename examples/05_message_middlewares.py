@@ -5,7 +5,7 @@ from typing import Any
 
 from fidem.effects import Effect, EffectContext, Effectful, ExternalReadEffect, InternalEffect
 from fidem.environment import EffectDef, EnvironmentImpl
-from fidem.messages import Command, Message, MessageContext
+from fidem.messages import Command, Message, MessageContext, StagedEffectful
 from fidem.operation_engine import (
     MessageMiddleware,
     MessageMiddlewareDef,
@@ -108,7 +108,7 @@ class ConvertCommand(Command[float]):
     currency: str
 
 
-def convert(command: ConvertCommand) -> Effectful[float, Effect[Any]]:
+def convert(command: ConvertCommand) -> StagedEffectful[float]:
     rate = yield from FetchRateEffect(command.currency)
     return command.amount * rate
 

@@ -32,8 +32,9 @@ from fidem.di.effects import (
     Scope,
     TransactionDependencyAccessError,
 )
-from fidem.effects import Effect, EffectContext, TransactionContext
+from fidem.effects import Effect, EffectContext
 from fidem.messages import Event, Message, MessageContext
+from fidem.transactions import TransactionContext
 from tests.effects import TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
 from tests.messages import TestCommand
 
@@ -937,7 +938,7 @@ class TestApplicationLifecycle:
 MESSAGE = TestCommand()
 MESSAGE_CONTEXT = MessageContext(message_id="test_message_id")
 EFFECT_CONTEXT = EffectContext(effect_id="test_effect_id")
-TRANSACTION_CONTEXT = TransactionContext(read_only=False)
+TRANSACTION_CONTEXT = TransactionContext(read_only=False, transaction=None)
 
 
 def make_scopes(effect: Effect[Any], application_scope: Scope | None = None) -> Sequence[Scope]:

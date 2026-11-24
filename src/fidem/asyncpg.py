@@ -1,12 +1,18 @@
 from collections.abc import AsyncGenerator, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 from asyncpg import Connection, Pool
 
 from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
-from fidem.effects import TransactionContext
-from fidem.messages import Message
+from fidem.transactions import AnyTransaction, TransactionContext
+
+__all__ = [
+    "AsyncpgConnectionDef",
+    "AsyncpgTransactionOptions",
+    "IsolationLevel",
+    "TransactionRolledBackError",
+]
 
 type IsolationLevel = Literal["read_committed", "repeatable_read", "serializable"]
 
@@ -25,13 +31,19 @@ class AsyncpgConnectionDef(EffectDependencyDef[Connection]):
 
     def __init__(
         self,
-        options: AsyncpgTransactionOptions = AsyncpgTransactionOptions(),
-        message_options: Mapping[type[Message[Any]], AsyncpgTransactionOptions] | None = None,
+        # Each query of a read committed transaction sees its own snapshot, so consistent reads need more.
+        read_options: AsyncpgTransactionOptions = AsyncpgTransactionOptions(isolation="repeatable_read"),
+        write_options: AsyncpgTransactionOptions = AsyncpgTransactionOptions(),
+        transaction_options: Mapping[AnyTransaction, AsyncpgTransactionOptions] | None = None,
         name: str = "",
     ) -> None:
-        """Message options replace the options in the transactions of the message except the read-only ones."""
+        """Options of a transaction replace the options of its kind."""
         super().__init__(
-            factory=self._make_factory(options, {} if message_options is None else dict(message_options)),
+            factory=self._make_factory(
+                read_options=read_options,
+                write_options=write_options,
+                transaction_options={} if transaction_options is None else dict(transaction_options),
+            ),
             lifetime=EffectDependencyLifetime.TRANSACTION,
             name=name,
             type=Connection,
@@ -39,27 +51,26 @@ class AsyncpgConnectionDef(EffectDependencyDef[Connection]):
 
     @staticmethod
     def _make_factory(
-        options: AsyncpgTransactionOptions,
-        message_options: Mapping[type[Message[Any]], AsyncpgTransactionOptions],
+        read_options: AsyncpgTransactionOptions,
+        write_options: AsyncpgTransactionOptions,
+        transaction_options: Mapping[AnyTransaction, AsyncpgTransactionOptions],
     ) -> Callable[..., AsyncGenerator[Connection]]:
-        async def connection(
-            pool: Pool,
-            transaction_context: TransactionContext,
-            message: Message[Any],
-        ) -> AsyncGenerator[Connection]:
-            # The options of a message are for its writes, and a read-only transaction wraps a single read.
-            transaction_options = (
-                options if transaction_context.read_only else message_options.get(type(message), options)
-            )
+        async def connection(pool: Pool, transaction_context: TransactionContext) -> AsyncGenerator[Connection]:
+            transaction = transaction_context.transaction
+            read_only = transaction_context.read_only
+            options = read_options if read_only else write_options
+            if transaction is not None:
+                options = transaction_options.get(transaction, options)
             async with pool.acquire() as proxy:
                 # The pool proxy forwards everything to the connection, and asyncpg documents it as one.
                 connection = cast("Connection", proxy)
-                # Each query of a read committed transaction sees its own snapshot anyway.
-                if transaction_context.read_only and transaction_options.isolation == "read_committed":
+                # A single read sees one snapshot anyway, and so does each query of a read committed transaction.
+                if read_only and (transaction is None or options.isolation == "read_committed"):
                     yield connection
                 else:
-                    isolation = transaction_options.isolation.replace("_", " ").upper()
-                    await connection.execute(f"BEGIN ISOLATION LEVEL {isolation}")
+                    isolation = options.isolation.replace("_", " ").upper()
+                    access_mode = " READ ONLY" if read_only else ""
+                    await connection.execute(f"BEGIN ISOLATION LEVEL {isolation}{access_mode}")
                     try:
                         yield connection
                     except BaseException:
