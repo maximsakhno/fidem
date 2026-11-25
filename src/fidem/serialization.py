@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
 from typing import Any, final, overload
 
 __all__ = [
@@ -43,7 +43,10 @@ class Codec[T](ABC):
 
 
 class Serializer(ABC):
-    """Prepares codecs for the types that its implementation supports."""
+    """Prepares codecs for the types that its implementation supports, once per type."""
+
+    # Created on first use so that implementations need not call the constructor of the base class.
+    _codecs: MutableMapping[object, Codec[Any]] | None = None
 
     # Not `TypeForm`, because it is not in the standard library yet, so the type of a union codec is written explicitly.
     @overload
@@ -54,7 +57,17 @@ class Serializer(ABC):
 
     @final
     def codec(self, type_: object) -> Codec[Any]:
-        return self._make_codec(type_)
+        if self._codecs is None:
+            self._codecs = {}
+        try:
+            codec = self._codecs.get(type_)
+        except TypeError:
+            # A type with unhashable metadata, such as `Annotated`, cannot be cached.
+            return self._make_codec(type_)
+        if codec is None:
+            codec = self._make_codec(type_)
+            self._codecs[type_] = codec
+        return codec
 
     @abstractmethod
     def _make_codec(self, type_: object) -> Codec[Any]:

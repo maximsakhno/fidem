@@ -3,12 +3,13 @@ from collections.abc import MutableMapping, MutableSet
 from dataclasses import dataclass
 from typing import Any
 
-from fidem.effects import Effect, EffectContext, Effectful, ExternalReadEffect, InternalEffect
+from fidem.effects import EffectContext, ExternalReadEffect, InternalEffect
 from fidem.environment import EffectDef, EnvironmentImpl
 from fidem.messages import Command, Message, MessageContext, StagedEffectful
 from fidem.operation_engine import (
     MessageMiddleware,
     MessageMiddlewareDef,
+    MessageMiddlewareEffectful,
     OperationEngineImpl,
     Proceed,
     StagedCommandDef,
@@ -75,7 +76,7 @@ async def handle_fetch_rate(effect: FetchRateEffect, effect_context: EffectConte
 
 # ── Middlewares ───────────────────────────────────────────
 # The cache returns a stored result without proceeding, the result is stored by an effect as well.
-def cache(message: Message[Any]) -> Effectful[object, Effect[Any]]:
+def cache(message: Message[Any]) -> MessageMiddlewareEffectful[object]:
     entry = yield from GetCachedEffect(message)
     if entry is not None:
         yield from LogEffect(f"cache hit for {message}")
@@ -87,7 +88,7 @@ def cache(message: Message[Any]) -> Effectful[object, Effect[Any]]:
 
 # Each attempt runs the handler anew with the same effect ids, so writes stay idempotent.
 def make_retry(attempts: int) -> MessageMiddleware:
-    def retry(context: MessageContext) -> Effectful[object, Effect[Any]]:
+    def retry(context: MessageContext) -> MessageMiddlewareEffectful[object]:
         attempt = 1
         while True:
             try:
