@@ -18,6 +18,8 @@ __all__ = [
     "AtomicHandler",
     "Command",
     "Event",
+    "EventHandlerName",
+    "EventVersion",
     "Message",
     "MessageContext",
     "MessageId",
@@ -37,6 +39,8 @@ class Message[ResultT](Effect[ResultT]):
 
 type MessageId = str
 type MessageName = str
+type EventVersion = int
+type EventHandlerName = str
 
 
 @dataclass(slots=True, frozen=True)

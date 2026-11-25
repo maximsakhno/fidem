@@ -2,7 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, make_dataclass
 from datetime import UTC, datetime
 from json import dumps, loads
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
 import pytest
@@ -96,6 +96,16 @@ def test_codec_is_typed_by_class(serializer: Serializer) -> None:
     codec: Codec[list[Address]] = serializer.codec(list[Address])
 
     assert codec.from_json(b'[{"city": "Yerevan"}]') == [Address(city="Yerevan")]
+
+
+def test_codec_is_prepared_once_per_type(serializer: Serializer) -> None:
+    assert serializer.codec(list[Address]) is serializer.codec(list[Address])
+
+
+def test_type_with_unhashable_metadata_gets_codec(serializer: Serializer) -> None:
+    codec = serializer.codec(Annotated[int, ["unhashable"]])
+
+    assert codec.to_json(1) == b"1"
 
 
 def test_unsupported_type_fails_when_codec_is_prepared(serializer: Serializer) -> None:

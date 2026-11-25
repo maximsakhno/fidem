@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
-from collections import defaultdict
-from collections.abc import Awaitable, Callable, Collection, Mapping, MutableMapping, MutableSequence, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from functools import partial
@@ -25,6 +24,7 @@ from fidem.operation_engine import (
     Instruction,
     OperationEngine,
     RunTransactionInstruction,
+    check_unique,
 )
 from fidem.transactions import AnyTransaction, TransactionContext
 
@@ -147,17 +147,8 @@ class EnvironmentImpl(Environment):
         cls,
         effect_defs: Collection[EffectDef[Any]],
     ) -> Mapping[type[Effect[Any]], EffectDef[Any]]:
-        type_to_effect_defs: MutableMapping[type[Effect[Any]], MutableSequence[EffectDef[Any]]] = defaultdict(list)
-        for effect_def in effect_defs:
-            type_to_effect_defs[effect_def.effect_type].append(effect_def)
-
-        type_to_effect_def: MutableMapping[type[Effect[Any]], EffectDef[Any]] = {}
-        for effect_type, defs in type_to_effect_defs.items():
-            if len(defs) > 1:
-                raise DuplicateEffectDefError(defs)
-            type_to_effect_def[effect_type] = defs[0]
-
-        return type_to_effect_def
+        check_unique(effect_defs, lambda effect_def: effect_def.effect_type, DuplicateEffectDefError)
+        return {effect_def.effect_type: effect_def for effect_def in effect_defs}
 
     def _prepare_effect(
         self,

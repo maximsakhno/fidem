@@ -13,11 +13,12 @@ from fidem.asyncpg.migrations import (
     SectionName,
     migrate,
 )
-from fidem.asyncpg.outbox import OUTBOX_SECTION
+from fidem.asyncpg.outbox import OUTBOX_SECTION, AsyncpgOutboxEffectDef
 
 __all__ = [
     "OUTBOX_SECTION",
     "AsyncpgConnectionDef",
+    "AsyncpgOutboxEffectDef",
     "AsyncpgTransactionOptions",
     "DuplicateMigrationSectionError",
     "IsolationLevel",
