@@ -40,6 +40,12 @@ Documentation = "https://github.com/maximsakhno/fidem#readme"
 asyncpg = [
     "asyncpg>=0.32.0",
 ]
+pydantic = [
+    "pydantic>=2.14.4",
+]
+msgspec = [
+    "msgspec>=0.22.0",
+]
 
 [dependency-groups]
 lint = [
@@ -58,6 +64,8 @@ test = [
     "pytest-timeout>=2.4.0",
     "asyncpg>=0.32.0",
     "testcontainers>=4.15.0",
+    "pydantic>=2.14.4",
+    "msgspec>=0.22.0",
 ]
 
 [tool.uv]
