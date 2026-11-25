@@ -26,7 +26,9 @@ from fidem.di.core import (
     DependencyArgument,
     DependencyGraph,
     DependencyKey,
+    DependencyName,
     Node,
+    ParameterName,
     Provider,
     UnsupportedFunctionError,
     get_parameters,
@@ -75,7 +77,7 @@ type DependencyFactory[DependencyT] = Callable[..., AsyncIterator[DependencyT]]
 class EffectDependencyDef[DependencyT]:
     factory: DependencyFactory[DependencyT]
     lifetime: EffectDependencyLifetime = EffectDependencyLifetime.APPLICATION
-    name: str = ""
+    name: DependencyName = ""
     type: object = None
     """The type the factory yields is used when the type is not set."""
 
@@ -222,7 +224,9 @@ class ScopedDependencyArgument:
         return self.argument.get(scopes[self.lifetime].dependencies)
 
 
-def get_scoped_arguments(arguments: Sequence[ScopedDependencyArgument], scopes: Scopes) -> Mapping[str, object]:
+def get_scoped_arguments(
+    arguments: Sequence[ScopedDependencyArgument], scopes: Scopes
+) -> Mapping[ParameterName, object]:
     return {scoped.argument.parameter: scoped.get(scopes) for scoped in arguments}
 
 
