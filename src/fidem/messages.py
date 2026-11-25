@@ -21,6 +21,7 @@ __all__ = [
     "Message",
     "MessageContext",
     "MessageId",
+    "MessageName",
     "Query",
     "QueryEffect",
     "QueryEffectful",
@@ -35,6 +36,7 @@ class Message[ResultT](Effect[ResultT]):
 
 
 type MessageId = str
+type MessageName = str
 
 
 @dataclass(slots=True, frozen=True)

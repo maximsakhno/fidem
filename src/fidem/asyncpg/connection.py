@@ -4,6 +4,7 @@ from typing import Literal, cast
 
 from asyncpg import Connection, Pool
 
+from fidem.di.core import DependencyName
 from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
 from fidem.transactions import AnyTransaction, TransactionContext
 
@@ -35,7 +36,7 @@ class AsyncpgConnectionDef(EffectDependencyDef[Connection]):
         read_options: AsyncpgTransactionOptions = AsyncpgTransactionOptions(isolation="repeatable_read"),
         write_options: AsyncpgTransactionOptions = AsyncpgTransactionOptions(),
         transaction_options: Mapping[AnyTransaction, AsyncpgTransactionOptions] | None = None,
-        name: str = "",
+        name: DependencyName = "",
     ) -> None:
         """Options of a transaction replace the options of its kind."""
         super().__init__(

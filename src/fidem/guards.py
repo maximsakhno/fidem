@@ -9,6 +9,7 @@ from fidem.di.core import (
     DependencyArgument,
     DependencyGraph,
     DependencyKey,
+    DependencyName,
     Node,
     Provider,
     check_generator_function,
@@ -36,7 +37,7 @@ type Guard[ValueT] = Callable[..., Effectful[ValueT, QueryEffect]]
 @dataclass(slots=True, frozen=True)
 class GuardDef[ValueT]:
     guard: Guard[ValueT]
-    name: str = ""
+    name: DependencyName = ""
     type: object = None
     """The type of the value the guard returns is used when the type is not set."""
 

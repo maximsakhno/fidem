@@ -16,10 +16,12 @@ __all__ = [
     "DependencyCycleError",
     "DependencyGraph",
     "DependencyKey",
+    "DependencyName",
     "DependencyNotFoundError",
     "DuplicateDependencyError",
     "MissingAnnotationError",
     "Node",
+    "ParameterName",
     "Provider",
     "UnresolvedAnnotationError",
     "UnsupportedFunctionError",
@@ -33,9 +35,13 @@ __all__ = [
 ]
 
 
+type DependencyName = str
+type ParameterName = str
+
+
 @dataclass(slots=True, frozen=True)
 class DependencyKey:
-    name: str
+    name: DependencyName
     type: object
 
 
@@ -54,12 +60,12 @@ def check_generator_function(function: Callable[..., object]) -> None:
 
 
 class UnsupportedParameterError(Exception):
-    def __init__(self, function: Callable[..., object], parameter: str) -> None:
+    def __init__(self, function: Callable[..., object], parameter: ParameterName) -> None:
         super().__init__(function, parameter)
 
 
 class MissingAnnotationError(Exception):
-    def __init__(self, function: Callable[..., object], parameter: str) -> None:
+    def __init__(self, function: Callable[..., object], parameter: ParameterName) -> None:
         super().__init__(function, parameter)
 
 
@@ -79,12 +85,12 @@ class DuplicateDependencyError(Exception):
 
 
 class DependencyNotFoundError(Exception):
-    def __init__(self, consumer: object, parameter: str, parameter_type: object) -> None:
+    def __init__(self, consumer: object, parameter: ParameterName, parameter_type: object) -> None:
         super().__init__(consumer, parameter, parameter_type)
 
 
 class AmbiguousDependencyError(Exception):
-    def __init__(self, consumer: object, parameter: str, candidates: Collection[DependencyKey]) -> None:
+    def __init__(self, consumer: object, parameter: ParameterName, candidates: Collection[DependencyKey]) -> None:
         super().__init__(consumer, parameter, candidates)
 
 
@@ -98,8 +104,8 @@ class Provider:
     """Provides the dependency with the key from the dependencies bound to its parameters."""
 
     key: DependencyKey
-    parameters: Mapping[str, object]
-    """Parameter names mapped to their annotations."""
+    parameters: Mapping[ParameterName, object]
+    """Annotations of the parameters."""
 
 
 def get_signature(function: Callable[..., object]) -> Signature:
@@ -109,9 +115,9 @@ def get_signature(function: Callable[..., object]) -> Signature:
         raise UnresolvedAnnotationError(function) from exc
 
 
-def get_parameters(function: Callable[..., object]) -> Mapping[str, object]:
+def get_parameters(function: Callable[..., object]) -> Mapping[ParameterName, object]:
     """Returns the annotations of the parameters that dependency injection passes by name."""
-    parameters: MutableMapping[str, object] = {}
+    parameters: MutableMapping[ParameterName, object] = {}
     for parameter in get_signature(function).parameters.values():
         if parameter.kind not in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY):
             raise UnsupportedParameterError(function, parameter.name)
@@ -131,7 +137,7 @@ def get_return_type(function: Callable[..., object]) -> object:
 def make_key(
     function: Callable[..., object],
     return_origins: Collection[object],
-    name: str,
+    name: DependencyName,
     dependency_type: object,
 ) -> DependencyKey:
     """Makes the key of the value the function produces."""
@@ -151,7 +157,7 @@ def make_message_dependencies(
 @dataclass(slots=True, frozen=True)
 class DependencyArgument:
     consumer: object
-    parameter: str
+    parameter: ParameterName
     key: DependencyKey
     required_type: type | None = None
     """The type to check at runtime when the dependency type is known only then."""
@@ -166,7 +172,7 @@ class DependencyArgument:
 def get_arguments(
     arguments: Sequence[DependencyArgument],
     dependencies: Mapping[DependencyKey, object],
-) -> Mapping[str, object]:
+) -> Mapping[ParameterName, object]:
     return {argument.parameter: argument.get(dependencies) for argument in arguments}
 
 
@@ -253,7 +259,7 @@ class DependencyGraph[ProviderT: Provider]:
     def _bind_parameters(
         self,
         consumer: object,
-        parameters: Mapping[str, object],
+        parameters: Mapping[ParameterName, object],
         index: Index,
     ) -> Sequence[DependencyArgument]:
         return tuple(
@@ -269,7 +275,7 @@ class DependencyGraph[ProviderT: Provider]:
     def _bind_parameter(
         self,
         consumer: object,
-        parameter: str,
+        parameter: ParameterName,
         parameter_type: object,
         index: Index,
     ) -> DependencyArgument:
@@ -324,7 +330,7 @@ class DependencyGraph[ProviderT: Provider]:
             raise DependencyCycleError(exc.args[1]) from exc
 
     def bind(
-        self, consumer: object, parameters: Mapping[str, object], subject_type: type
+        self, consumer: object, parameters: Mapping[ParameterName, object], subject_type: type
     ) -> Sequence[DependencyArgument]:
         """Binds the parameters of a consumer of the given subject."""
         return self._bind_parameters(consumer, parameters, self._add_subject_to_index((subject_type,)))

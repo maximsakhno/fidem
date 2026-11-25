@@ -27,6 +27,7 @@ from fidem.messages import (
     Event,
     Message,
     MessageContext,
+    MessageName,
     Query,
     QueryHandler,
     StagedHandler,
@@ -48,6 +49,7 @@ __all__ = [
     "MessageDef",
     "MessageMiddleware",
     "MessageMiddlewareDef",
+    "MiddlewareName",
     "OperationEngine",
     "OperationEngineImpl",
     "Proceed",
@@ -71,18 +73,19 @@ class Proceed(ControlEffect[Any]):
 
 
 type MessageMiddleware = Callable[..., Effectful[object, Effect[Any]]]
+type MiddlewareName = str
 
 
 @dataclass(frozen=True, slots=True)
 class MessageMiddlewareDef:
-    name: str
+    name: MiddlewareName
     """A stable name the effect ids of the middleware depend on."""
     middleware: MessageMiddleware
 
 
 @dataclass(frozen=True, slots=True)
 class MessageDef[MessageT: Message[Any], MessageHandlerT: Callable[..., Effectful[Any, Any]]]:
-    name: str
+    name: MessageName
     message_type: type[MessageT]
     handler: MessageHandlerT
     middleware_defs: Sequence[MessageMiddlewareDef] | None = None
@@ -294,7 +297,9 @@ class OperationEngineImpl(OperationEngine):
 
     @classmethod
     def _check_middleware_defs(cls, middleware_defs: Collection[MessageMiddlewareDef]) -> None:
-        name_to_middleware_defs: MutableMapping[str, MutableSequence[MessageMiddlewareDef]] = defaultdict(list)
+        name_to_middleware_defs: MutableMapping[MiddlewareName, MutableSequence[MessageMiddlewareDef]] = defaultdict(
+            list
+        )
         for middleware_def in middleware_defs:
             name_to_middleware_defs[middleware_def.name].append(middleware_def)
         for defs in name_to_middleware_defs.values():
