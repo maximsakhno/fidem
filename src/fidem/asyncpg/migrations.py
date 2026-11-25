@@ -2,6 +2,7 @@ from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping, MutableMapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
+from importlib.resources.abc import Traversable
 from logging import getLogger
 from typing import Final, cast
 
@@ -53,6 +54,12 @@ class MigrationSection:
     name: SectionName
     # Not `Sequence[MigrationSql]`, because a single string is one too and would make each character a migration.
     migrations: list[MigrationSql] | tuple[MigrationSql, ...]
+
+
+def load_section(name: SectionName, directory: Traversable) -> MigrationSection:
+    """Reads the `.sql` files of the directory in the order of their names."""
+    paths = sorted((path for path in directory.iterdir() if path.name.endswith(".sql")), key=lambda path: path.name)
+    return MigrationSection(name=name, migrations=tuple(path.read_text(encoding="utf-8") for path in paths))
 
 
 class DuplicateMigrationSectionError(Exception):
