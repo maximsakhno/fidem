@@ -944,6 +944,21 @@ class TestMessageMiddlewares:
 
         assert exc_info.value.value == "caught True"
 
+    def test_raises_unsupported_effect_error_when_transaction_of_middleware_yields_proceed(self) -> None:
+        @WriteTransaction
+        def proceed_in_transaction() -> WriteTransactionEffectful[object]:
+            return (yield from Proceed())  # pyright: ignore[reportReturnType] - checks what the transaction type forbids
+
+        def middleware() -> MessageMiddlewareEffectful[object]:
+            return (yield from proceed_in_transaction())
+
+        engine = make_engine(handle_without_effects, middleware_defs=[MessageMiddlewareDef("test", middleware)])
+
+        with pytest.raises(UnsupportedEffectError) as exc_info:
+            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+
+        assert exc_info.value.args == (Proceed(),)
+
     @pytest.mark.parametrize("effect", [TestControlEffect(), TestEvent(), TestCommand()])
     def test_raises_unsupported_effect_error_when_middleware_yields_unsupported_effect(
         self,
