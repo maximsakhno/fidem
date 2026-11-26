@@ -1,8 +1,8 @@
 from collections.abc import Callable, Collection, Iterable, Mapping, MutableSequence, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from random import Random
-from typing import Any, Final
+from typing import Any, Final, Self
 
 from fidem._validation import check_unique
 from fidem.di.core import DependencyKey, make_message_dependencies
@@ -55,6 +55,7 @@ from fidem.outbox import OutboxEvent, WriteOutboxEffect
 from fidem.transactions import (
     IMPLICIT_READ_TRANSACTION,
     IMPLICIT_WRITE_TRANSACTION,
+    AnyTransaction,
     ReadTransactionEffect,
     WriteTransactionEffect,
 )
@@ -120,21 +121,100 @@ class _PreparedEvent:
 
 @dataclass(frozen=True, slots=True)
 class _Execution:
+    """One run of a message."""
+
     message: Message[Any]
     message_context: MessageContext
     values: GuardValues
     seed: str
+    declared_events: Mapping[type[Message[Any]], _PreparedEvent]
 
 
-type _PlanEffect = Callable[[Effect[Any]], Iterable[Instruction[Any]]]
 type _EventBuffer = MutableSequence[OutboxEvent]
 """Events published so far by a transaction or a staged handler."""
 
+_HANDLED_EFFECT_TYPES: Final = (InternalEffect, ExternalEffect, DatabaseEffect)
+_ANY_EFFECT_TYPES: Final[tuple[type[Effect[Any]], ...]] = (Effect,)
+
+
+@dataclass(frozen=True, slots=True)
+class _EffectPlanner:
+    """Turns each effect of an effectful into the instructions that run it."""
+
+    execution: _Execution
+    allowed_effect_types: tuple[type[Effect[Any]], ...]
+    generate_effect_id: Callable[[], EffectId]
+    events: _EventBuffer | None = None
+    """Where the published events go, `None` forbids publishing."""
+    in_transaction: bool = False
+    proceed: Callable[[], ExecutionPlan[Any]] | None = None
+    """Runs the inner part of the middleware chain, `None` outside a middleware."""
+
+    def plan(self, effect: Effect[Any]) -> Iterable[Instruction[Any]]:
+        if isinstance(effect, Proceed) and self.proceed is not None:
+            return self.proceed()
+        if isinstance(effect, Event) and self.events is not None:
+            self._publish(effect, self.events)
+            # A buffered event needs no instruction, so the effectful gets `None` at once.
+            return ()
+        if not isinstance(effect, self.allowed_effect_types):
+            raise _EngineError(UnsupportedEffectError(effect))
+        if isinstance(effect, DatabaseEffect) and not self.in_transaction:
+            # A database effect outside a transaction runs as if the effectful called a transaction of this effect.
+            return self.plan(_call_in_implicit_transaction(effect))
+        if isinstance(effect, _HANDLED_EFFECT_TYPES):
+            return CallEffectHandlerInstruction(
+                message_context=self.execution.message_context,
+                message=self.execution.message,
+                effect_context=EffectContext(effect_id=self.generate_effect_id()),
+                effect=effect,
+            )
+        if isinstance(effect, ReadTransactionEffect | WriteTransactionEffect):
+            return RunTransactionInstruction(
+                transaction=effect.transaction,
+                plan=_run_transaction(effect, self.for_transaction(effect.transaction)),
+            )
+        raise _EngineError(UnsupportedEffectError(effect))
+
+    def for_transaction(self, transaction: AnyTransaction) -> Self:
+        """Plans the effects of the transaction, their ids continue the ids of the effects around it."""
+        return replace(
+            self,
+            allowed_effect_types=transaction.effect_types,
+            # Events of a write transaction go where the events around it go.
+            events=None if transaction.read_only else self.events,
+            in_transaction=True,
+            proceed=None,
+        )
+
+    def _publish(self, event: Event, events: _EventBuffer) -> None:
+        prepared_event = self.execution.declared_events.get(type(event))
+        if prepared_event is None:
+            raise _EngineError(EventNotDefinedError(type(event)))
+        event_def = prepared_event.event_def
+        event_id = self.generate_effect_id()
+        if event_def.handler_defs:
+            events.append(
+                OutboxEvent(
+                    event_id=event_id,
+                    source_message_id=self.execution.message_context.message_id,
+                    name=event_def.name,
+                    version=event_def.version,
+                    handlers=tuple(handler_def.name for handler_def in event_def.handler_defs),
+                    event=event,
+                )
+            )
+
+
+def _call_in_implicit_transaction(
+    effect: DatabaseEffect[Any],
+) -> ReadTransactionEffect[Any] | WriteTransactionEffect[Any]:
+    if isinstance(effect, DatabaseReadEffect):
+        return IMPLICIT_READ_TRANSACTION(effect)
+    return IMPLICIT_WRITE_TRANSACTION(effect)
+
 
 class OperationEngineImpl(OperationEngine):
-    _HANDLED_EFFECT_TYPES: Final = (InternalEffect, ExternalEffect, DatabaseEffect)
-    _ANY_EFFECT_TYPES: Final[tuple[type[Effect[Any]], ...]] = (Effect,)
-
     def __init__(
         self,
         command_defs: Collection[CommandDef[Any]] = (),
@@ -247,7 +327,7 @@ class OperationEngineImpl(OperationEngine):
             raise CommandNotDefinedError(type(command))
         execution_mode = prepared_command.message_def.execution_mode
         if execution_mode != ExecutionMode.EPHEMERAL:
-            raise NotImplementedError(f"_Execution mode {execution_mode} is not implemented yet")
+            raise NotImplementedError(f"Execution mode {execution_mode} is not implemented yet")
         return (yield from self._execute(prepared_command, command, message_context))
 
     def query[ResultT](
@@ -267,284 +347,150 @@ class OperationEngineImpl(OperationEngine):
         message_context: MessageContext,
     ) -> ExecutionPlan[Any]:
         try:
-            return (yield from self._run_chain(prepared_message, message, message_context))
+            return (yield from _run_chain(prepared_message, self._make_execution(message, message_context)))
         except _EngineError as exc:
             raise exc.error.with_traceback(exc.__traceback__) from None
 
-    def _run_chain[MessageDefT: _AnyMessageDef](
-        self,
-        prepared_message: _PreparedMessage[MessageDefT],
-        message: Message[Any],
-        message_context: MessageContext,
-    ) -> ExecutionPlan[Any]:
+    def _make_execution(self, message: Message[Any], message_context: MessageContext) -> _Execution:
         message_id = message_context.message_id
-        execution = _Execution(
+        return _Execution(
             message=message,
             message_context=message_context,
             values=make_message_dependencies(message, message_context),
             # The length prefix keeps the seeds of different messages apart whatever their ids are.
             seed=f"{len(message_id)}:{message_id}",
-        )
-        for guard in prepared_message.guards:
-            # Each guard has its own ids, so adding a guard does not shift the ids of the handler effects.
-            yield from self._run(
-                effectful=guard.step.run(execution.values),
-                plan_effect=self._make_plan_effect(
-                    execution=execution,
-                    allowed_effect_types=QUERY_EFFECT_TYPES,
-                    generate_effect_id=_EffectIdGenerator(execution.seed + guard.seed),
-                ),
-            )
-
-        run_inner: Callable[[], ExecutionPlan[Any]]
-        match prepared_message.message_def:
-            case AtomicCommandDef() | AtomicEventHandlerDef():
-                run_inner = partial(self._run_atomic_handler, execution=execution, handler=prepared_message.handler)
-            case StagedCommandDef() | StagedEventHandlerDef():
-                run_inner = partial(self._run_staged_handler, execution=execution, handler=prepared_message.handler)
-            case QueryDef():
-                run_inner = partial(self._run_query_handler, execution=execution, handler=prepared_message.handler)
-        for middleware in reversed(prepared_message.middlewares):
-            run_inner = partial(
-                self._run_middleware,
-                execution=execution,
-                middleware=middleware,
-                run_inner=run_inner,
-            )
-        return (yield from run_inner())
-
-    def _run_query_handler(self, execution: _Execution, handler: GuardedFunction) -> ExecutionPlan[Any]:
-        # Effect ids are derived from the message id so that replaying a message reproduces them.
-        return (
-            yield from self._run(
-                effectful=handler.call(execution.values),
-                plan_effect=self._make_plan_effect(
-                    execution=execution,
-                    allowed_effect_types=QUERY_EFFECT_TYPES,
-                    generate_effect_id=_EffectIdGenerator(execution.seed),
-                ),
-            )
+            declared_events=self._type_to_event,
         )
 
-    def _run_staged_handler(self, execution: _Execution, handler: GuardedFunction) -> ExecutionPlan[Any]:
-        generate_effect_id = _EffectIdGenerator(execution.seed)
-        # Each run buffers its own events, so a failed run publishes nothing.
-        return self._run_writing_events(
-            run=lambda plan_effect: self._run(handler.call(execution.values), plan_effect),
-            make_plan_effect=lambda events: self._make_plan_effect(
-                execution=execution,
-                allowed_effect_types=self._ANY_EFFECT_TYPES,
-                generate_effect_id=generate_effect_id,
-                events=events,
-            ),
-        )
 
-    def _run_atomic_handler(self, execution: _Execution, handler: GuardedFunction) -> ExecutionPlan[Any]:
-        # The write continues the ids of the reads, as if the handler yielded it.
-        generate_effect_id = _EffectIdGenerator(execution.seed)
-        write = yield from self._run(
-            effectful=handler.call(execution.values),
-            plan_effect=self._make_plan_effect(
-                execution=execution,
-                allowed_effect_types=QUERY_EFFECT_TYPES,
-                generate_effect_id=generate_effect_id,
-            ),
-        )
-        if isinstance(write, WriteTransactionEffect):
-            # The events of the transaction are written in it.
-            transaction_plan = self._run_writing_events(
-                run=lambda plan_effect: self._run_transaction(write, plan_effect),
-                make_plan_effect=lambda events: self._make_plan_effect(
-                    execution=execution,
-                    allowed_effect_types=write.transaction.effect_types,
-                    generate_effect_id=generate_effect_id,
-                    events=events,
-                    in_transaction=True,
-                ),
-            )
-            return (yield RunTransactionInstruction(transaction=write.transaction, plan=transaction_plan))
-        if isinstance(write, ExternalWriteEffect):
-            plan_effect = self._make_plan_effect(
-                execution=execution,
-                allowed_effect_types=self._ANY_EFFECT_TYPES,
-                generate_effect_id=generate_effect_id,
-            )
-            return (yield from plan_effect(write))
-        raise _EngineError(UnsupportedAtomicResultError(write))
+def _run_chain[MessageDefT: _AnyMessageDef](
+    prepared_message: _PreparedMessage[MessageDefT],
+    execution: _Execution,
+) -> ExecutionPlan[Any]:
+    """Runs the guards, then the middlewares from the outer one, then the handler."""
+    yield from _run_guards(prepared_message.guards, execution)
+    run_inner: Callable[[], ExecutionPlan[Any]] = partial(_run_handler, prepared_message, execution)
+    for middleware in reversed(prepared_message.middlewares):
+        run_inner = partial(_run_middleware, middleware, execution, run_inner)
+    return (yield from run_inner())
 
-    @staticmethod
-    def _run_writing_events[ResultT](
-        run: Callable[[_PlanEffect], ExecutionPlan[ResultT]],
-        make_plan_effect: Callable[[_EventBuffer], _PlanEffect],
-    ) -> ExecutionPlan[ResultT]:
-        """Runs the plan and then writes the events it published to the outbox."""
-        events: _EventBuffer = []
-        plan_effect = make_plan_effect(events)
-        result = yield from run(plan_effect)
-        if events:
-            yield from plan_effect(WriteOutboxEffect(events=tuple(events)))
-        return result
 
-    def _run_middleware(
-        self,
-        execution: _Execution,
-        middleware: _PreparedMiddleware,
-        run_inner: Callable[[], ExecutionPlan[Any]],
-    ) -> ExecutionPlan[Any]:
-        return (
-            yield from self._run(
-                effectful=middleware.middleware.call(execution.values),
-                plan_effect=partial(
-                    self._plan_middleware_effect,
-                    plan_effect=self._make_plan_effect(
-                        execution=execution,
-                        allowed_effect_types=self._ANY_EFFECT_TYPES,
-                        generate_effect_id=_EffectIdGenerator(execution.seed + middleware.seed),
-                    ),
-                    run_inner=run_inner,
-                ),
-            )
-        )
-
-    @staticmethod
-    def _plan_middleware_effect(
-        effect: Effect[Any],
-        plan_effect: _PlanEffect,
-        run_inner: Callable[[], ExecutionPlan[Any]],
-    ) -> Iterable[Instruction[Any]]:
-        if isinstance(effect, Proceed):
-            return run_inner()
-        return plan_effect(effect)
-
-    @staticmethod
-    def _run[ResultT](effectful: Effectful[ResultT, Effect[Any]], plan_effect: _PlanEffect) -> ExecutionPlan[ResultT]:
-        try:
-            effect = effectful.send(None)
-            while True:
-                effect_plan = plan_effect(effect)
-                try:
-                    effect_result = yield from effect_plan
-                except _EngineError:
-                    raise
-                except Exception as exc:  # noqa: BLE001 - the handler decides how to handle the error
-                    effect = effectful.throw(exc)
-                else:
-                    effect = effectful.send(effect_result)
-        except StopIteration as exc:
-            return exc.value
-        finally:
-            effectful.close()
-
-    def _make_plan_effect(
-        self,
-        execution: _Execution,
-        allowed_effect_types: tuple[type[Effect[Any]], ...],
-        generate_effect_id: Callable[[], EffectId],
-        events: _EventBuffer | None = None,
-        *,
-        in_transaction: bool = False,
-    ) -> _PlanEffect:
-        """`events` is where the published events go, `None` forbids publishing."""
-        return partial(
-            self._make_instruction,
-            allowed_effect_types=allowed_effect_types,
-            generate_effect_id=generate_effect_id,
+def _run_guards(guards: Sequence[_PreparedGuard], execution: _Execution) -> ExecutionPlan[None]:
+    for guard in guards:
+        # Each guard has its own ids, so adding a guard does not shift the ids of the handler effects.
+        planner = _EffectPlanner(
             execution=execution,
-            events=events,
-            in_transaction=in_transaction,
+            allowed_effect_types=QUERY_EFFECT_TYPES,
+            generate_effect_id=_EffectIdGenerator(execution.seed + guard.seed),
         )
+        yield from _run(guard.step.run(execution.values), planner)
 
-    def _make_instruction(
-        self,
-        effect: Effect[Any],
-        allowed_effect_types: tuple[type[Effect[Any]], ...],
-        generate_effect_id: Callable[[], EffectId],
-        execution: _Execution,
-        events: _EventBuffer | None,
-        in_transaction: bool,
-    ) -> Iterable[Instruction[Any]]:
-        if isinstance(effect, Event) and events is not None:
-            self._publish(
-                event=effect,
-                execution=execution,
-                generate_effect_id=generate_effect_id,
-                events=events,
-            )
-            # A buffered event needs no instruction, so the effectful gets `None` at once.
-            return ()
-        if not isinstance(effect, allowed_effect_types):
-            raise _EngineError(UnsupportedEffectError(effect))
-        if isinstance(effect, DatabaseEffect) and not in_transaction:
-            # A database effect outside a transaction runs as if the effectful called a transaction of this effect.
-            return self._make_instruction(
-                effect=self._call_in_implicit_transaction(effect),
-                allowed_effect_types=allowed_effect_types,
-                generate_effect_id=generate_effect_id,
-                execution=execution,
-                events=events,
-                in_transaction=in_transaction,
-            )
-        if isinstance(effect, self._HANDLED_EFFECT_TYPES):
-            return CallEffectHandlerInstruction(
-                message_context=execution.message_context,
-                message=execution.message,
-                effect_context=EffectContext(effect_id=generate_effect_id()),
-                effect=effect,
-            )
-        if isinstance(effect, ReadTransactionEffect | WriteTransactionEffect):
-            # The effects of the transaction continue the ids of the effects around it.
-            plan_effect = self._make_plan_effect(
-                execution=execution,
-                allowed_effect_types=effect.transaction.effect_types,
-                generate_effect_id=generate_effect_id,
-                # Events of a write transaction go where the events around it go.
-                events=None if effect.transaction.read_only else events,
-                in_transaction=True,
-            )
-            return RunTransactionInstruction(
-                transaction=effect.transaction,
-                plan=self._run_transaction(effect, plan_effect),
-            )
-        raise _EngineError(UnsupportedEffectError(effect))
 
-    @staticmethod
-    def _call_in_implicit_transaction(
-        effect: DatabaseEffect[Any],
-    ) -> ReadTransactionEffect[Any] | WriteTransactionEffect[Any]:
-        if isinstance(effect, DatabaseReadEffect):
-            return IMPLICIT_READ_TRANSACTION(effect)
-        return IMPLICIT_WRITE_TRANSACTION(effect)
+def _run_middleware(
+    middleware: _PreparedMiddleware,
+    execution: _Execution,
+    run_inner: Callable[[], ExecutionPlan[Any]],
+) -> ExecutionPlan[Any]:
+    planner = _EffectPlanner(
+        execution=execution,
+        allowed_effect_types=_ANY_EFFECT_TYPES,
+        generate_effect_id=_EffectIdGenerator(execution.seed + middleware.seed),
+        proceed=run_inner,
+    )
+    return (yield from _run(middleware.middleware.call(execution.values), planner))
 
-    def _publish(
-        self,
-        event: Event,
-        execution: _Execution,
-        generate_effect_id: Callable[[], EffectId],
-        events: _EventBuffer,
-    ) -> None:
-        prepared_event = self._type_to_event.get(type(event))
-        if prepared_event is None:
-            raise _EngineError(EventNotDefinedError(type(event)))
-        event_def = prepared_event.event_def
-        event_id = generate_effect_id()
-        if event_def.handler_defs:
-            events.append(
-                OutboxEvent(
-                    event_id=event_id,
-                    source_message_id=execution.message_context.message_id,
-                    name=event_def.name,
-                    version=event_def.version,
-                    handlers=tuple(handler_def.name for handler_def in event_def.handler_defs),
-                    event=event,
-                )
-            )
 
-    @classmethod
-    def _run_transaction(
-        cls,
-        effect: ReadTransactionEffect[Any] | WriteTransactionEffect[Any, Any],
-        plan_effect: _PlanEffect,
-    ) -> ExecutionPlan[Any]:
-        # Called in the plan so that an error of the call reaches the handler like other errors of the transaction.
-        effectful = effect.transaction.function(*effect.args, **effect.kwargs)
-        return (yield from cls._run(effectful, plan_effect))
+def _run_handler[MessageDefT: _AnyMessageDef](
+    prepared_message: _PreparedMessage[MessageDefT],
+    execution: _Execution,
+) -> ExecutionPlan[Any]:
+    handler = prepared_message.handler
+    match prepared_message.message_def:
+        case AtomicCommandDef() | AtomicEventHandlerDef():
+            return _run_atomic_handler(handler, execution)
+        case StagedCommandDef() | StagedEventHandlerDef():
+            return _run_staged_handler(handler, execution)
+        case QueryDef():
+            return _run_query_handler(handler, execution)
+
+
+def _run_query_handler(handler: GuardedFunction, execution: _Execution) -> ExecutionPlan[Any]:
+    # Effect ids are derived from the message id so that replaying a message reproduces them.
+    planner = _EffectPlanner(
+        execution=execution,
+        allowed_effect_types=QUERY_EFFECT_TYPES,
+        generate_effect_id=_EffectIdGenerator(execution.seed),
+    )
+    return (yield from _run(handler.call(execution.values), planner))
+
+
+def _run_staged_handler(handler: GuardedFunction, execution: _Execution) -> ExecutionPlan[Any]:
+    planner = _EffectPlanner(
+        execution=execution,
+        allowed_effect_types=_ANY_EFFECT_TYPES,
+        generate_effect_id=_EffectIdGenerator(execution.seed),
+    )
+    # Each run buffers its own events, so a failed run publishes nothing.
+    return _run_writing_events(lambda planner: _run(handler.call(execution.values), planner), planner)
+
+
+def _run_atomic_handler(handler: GuardedFunction, execution: _Execution) -> ExecutionPlan[Any]:
+    # The write continues the ids of the reads, as if the handler yielded it.
+    read_planner = _EffectPlanner(
+        execution=execution,
+        allowed_effect_types=QUERY_EFFECT_TYPES,
+        generate_effect_id=_EffectIdGenerator(execution.seed),
+    )
+    write = yield from _run(handler.call(execution.values), read_planner)
+    if isinstance(write, WriteTransactionEffect):
+        # The events of the transaction are written in it.
+        transaction_plan = _run_writing_events(
+            run=partial(_run_transaction, write),
+            planner=read_planner.for_transaction(write.transaction),
+        )
+        return (yield RunTransactionInstruction(transaction=write.transaction, plan=transaction_plan))
+    if isinstance(write, ExternalWriteEffect):
+        write_planner = replace(read_planner, allowed_effect_types=_ANY_EFFECT_TYPES)
+        return (yield from write_planner.plan(write))
+    raise _EngineError(UnsupportedAtomicResultError(write))
+
+
+def _run_writing_events[ResultT](
+    run: Callable[[_EffectPlanner], ExecutionPlan[ResultT]],
+    planner: _EffectPlanner,
+) -> ExecutionPlan[ResultT]:
+    """Runs the plan and then writes the events it published to the outbox."""
+    events: _EventBuffer = []
+    publishing_planner = replace(planner, events=events)
+    result = yield from run(publishing_planner)
+    if events:
+        yield from publishing_planner.plan(WriteOutboxEffect(events=tuple(events)))
+    return result
+
+
+def _run_transaction(
+    effect: ReadTransactionEffect[Any] | WriteTransactionEffect[Any, Any],
+    planner: _EffectPlanner,
+) -> ExecutionPlan[Any]:
+    # Called in the plan so that an error of the call reaches the handler like other errors of the transaction.
+    effectful = effect.transaction.function(*effect.args, **effect.kwargs)
+    return (yield from _run(effectful, planner))
+
+
+def _run[ResultT](effectful: Effectful[ResultT, Effect[Any]], planner: _EffectPlanner) -> ExecutionPlan[ResultT]:
+    try:
+        effect = effectful.send(None)
+        while True:
+            effect_plan = planner.plan(effect)
+            try:
+                effect_result = yield from effect_plan
+            except _EngineError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the handler decides how to handle the error
+                effect = effectful.throw(exc)
+            else:
+                effect = effectful.send(effect_result)
+    except StopIteration as exc:
+        return exc.value
+    finally:
+        effectful.close()
