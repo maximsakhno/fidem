@@ -108,7 +108,7 @@ class Provider:
     """Annotations of the parameters."""
 
 
-def get_signature(function: Callable[..., object]) -> Signature:
+def _get_signature(function: Callable[..., object]) -> Signature:
     try:
         return signature(function, eval_str=True)
     except NameError as exc:
@@ -118,7 +118,7 @@ def get_signature(function: Callable[..., object]) -> Signature:
 def get_parameters(function: Callable[..., object]) -> Mapping[ParameterName, object]:
     """Returns the annotations of the parameters that dependency injection passes by name."""
     parameters: MutableMapping[ParameterName, object] = {}
-    for parameter in get_signature(function).parameters.values():
+    for parameter in _get_signature(function).parameters.values():
         if parameter.kind not in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY):
             raise UnsupportedParameterError(function, parameter.name)
         if parameter.annotation is Parameter.empty:
@@ -127,8 +127,8 @@ def get_parameters(function: Callable[..., object]) -> Mapping[ParameterName, ob
     return parameters
 
 
-def get_return_type(function: Callable[..., object]) -> object:
-    return_type = get_signature(function).return_annotation
+def _get_return_type(function: Callable[..., object]) -> object:
+    return_type = _get_signature(function).return_annotation
     if return_type is Signature.empty:
         raise MissingAnnotationError(function, "return")
     return return_type
@@ -141,7 +141,7 @@ def make_key(
     dependency_type: object,
 ) -> DependencyKey:
     """Makes the key of the value the function produces."""
-    return_type = get_return_type(function)
+    return_type = _get_return_type(function)
     if get_origin(return_type) not in return_origins:
         raise UnsupportedReturnTypeError(function, return_type)
     return DependencyKey(name=name, type=get_args(return_type)[0] if dependency_type is None else dependency_type)
@@ -183,7 +183,7 @@ class Node:
     """The node matches its type and its subclasses but not its bases, the exact type is checked at runtime."""
 
 
-type Index = Mapping[object, Sequence[Node]]
+type _Index = Mapping[object, Sequence[Node]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,7 +207,7 @@ class DependencyGraph[ProviderT: Provider]:
         self._subject_node: Node = Node(key=subject_key)
         self._builtin_nodes: Collection[Node] = builtin_nodes
         self.providers: Final[Mapping[DependencyKey, ProviderT]] = self._make_key_to_provider(providers)
-        self._index: Index = self._make_index()
+        self._index: _Index = self._make_index()
         index = self._add_subject_to_index(subject_types)
         self.arguments: Final[Mapping[DependencyKey, Sequence[DependencyArgument]]] = {
             key: self._bind_parameters(key, provider.parameters, index) for key, provider in self.providers.items()
@@ -226,7 +226,7 @@ class DependencyGraph[ProviderT: Provider]:
             key_to_provider[provider.key] = provider
         return key_to_provider
 
-    def _make_index(self) -> Index:
+    def _make_index(self) -> _Index:
         """Maps each type to the nodes a parameter of this type matches."""
         index: MutableMapping[object, MutableSequence[Node]] = defaultdict(list)
         for node in [*(Node(key=key) for key in self.providers), *self._builtin_nodes]:
@@ -234,7 +234,7 @@ class DependencyGraph[ProviderT: Provider]:
                 index[base].append(node)
         return index
 
-    def _add_subject_to_index(self, subject_types: Collection[type]) -> Index:
+    def _add_subject_to_index(self, subject_types: Collection[type]) -> _Index:
         subject_index: MutableMapping[object, Sequence[Node]] = dict(self._index)
         for base in {base for subject_type in subject_types for base in self._get_classes(subject_type)}:
             subject_index[base] = (*self._index.get(base, ()), self._subject_node)
@@ -248,8 +248,8 @@ class DependencyGraph[ProviderT: Provider]:
             return tuple(base for base in dependency_type.__mro__ if base is not object)
         return (dependency_type,)
 
-    @classmethod
-    def _normalize_type(cls, annotation: object) -> object:
+    @staticmethod
+    def _normalize_type(annotation: object) -> object:
         """Treats a generic class parameterized only with `Any` as the class itself."""
         origin = get_origin(annotation)
         if isinstance(origin, type) and all(argument is Any for argument in get_args(annotation)):
@@ -260,7 +260,7 @@ class DependencyGraph[ProviderT: Provider]:
         self,
         consumer: object,
         parameters: Mapping[ParameterName, object],
-        index: Index,
+        index: _Index,
     ) -> Sequence[DependencyArgument]:
         return tuple(
             self._bind_parameter(
@@ -277,7 +277,7 @@ class DependencyGraph[ProviderT: Provider]:
         consumer: object,
         parameter: ParameterName,
         parameter_type: object,
-        index: Index,
+        index: _Index,
     ) -> DependencyArgument:
         parameter_type = self._normalize_type(parameter_type)
         exact_candidates = index.get(parameter_type, ())
@@ -321,8 +321,8 @@ class DependencyGraph[ProviderT: Provider]:
             for key, key_arguments in arguments.items()
         }
 
-    @classmethod
-    def sort(cls, graph: Mapping[DependencyKey, Collection[DependencyKey]]) -> Sequence[DependencyKey]:
+    @staticmethod
+    def sort(graph: Mapping[DependencyKey, Collection[DependencyKey]]) -> Sequence[DependencyKey]:
         """Orders the dependencies so that each one follows its dependencies."""
         try:
             return tuple(TopologicalSorter(graph).static_order())

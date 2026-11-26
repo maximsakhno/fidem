@@ -8,6 +8,7 @@ from types import TracebackType
 from typing import Any, ClassVar, Self
 from uuid import uuid4
 
+from fidem._validation import check_unique
 from fidem.di.core import UnsupportedFunctionError
 from fidem.di.effects import (
     EffectDependencyContainer,
@@ -24,7 +25,6 @@ from fidem.operation_engine import (
     Instruction,
     OperationEngine,
     RunTransactionInstruction,
-    check_unique,
 )
 from fidem.transactions import AnyTransaction, TransactionContext
 
@@ -105,7 +105,7 @@ class EnvironmentAlreadyStartedError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
-class PreparedEffect:
+class _PreparedEffect:
     handler: PreparedEffectHandler
     middlewares: Sequence[EffectMiddleware]
     implicit_transaction_context: TransactionContext | None
@@ -136,15 +136,14 @@ class EnvironmentImpl(Environment):
             dependency_defs=dependency_defs,
             effect_types=tuple(type_to_effect_def),
         )
-        self._type_to_effect: Mapping[type[Effect[Any]], PreparedEffect] = {
+        self._type_to_effect: Mapping[type[Effect[Any]], _PreparedEffect] = {
             effect_type: self._prepare_effect(effect_def, effect_middleware_defs)
             for effect_type, effect_def in type_to_effect_def.items()
         }
         self._application_scope: Scope | None = None
 
-    @classmethod
+    @staticmethod
     def _make_type_to_effect_def(
-        cls,
         effect_defs: Collection[EffectDef[Any]],
     ) -> Mapping[type[Effect[Any]], EffectDef[Any]]:
         check_unique(effect_defs, lambda effect_def: effect_def.effect_type, DuplicateEffectDefError)
@@ -154,13 +153,13 @@ class EnvironmentImpl(Environment):
         self,
         effect_def: EffectDef[Any],
         effect_middleware_defs: Sequence[EffectMiddlewareDef],
-    ) -> PreparedEffect:
+    ) -> _PreparedEffect:
         middleware_defs = effect_middleware_defs if effect_def.middleware_defs is None else effect_def.middleware_defs
         for middleware_def in middleware_defs:
             if not iscoroutinefunction(middleware_def.middleware):
                 raise UnsupportedFunctionError(middleware_def.middleware)
         implicit_transaction_context = self._get_implicit_transaction_context(effect_def.effect_type)
-        return PreparedEffect(
+        return _PreparedEffect(
             handler=self._dependency_container.prepare_effect_handler(
                 effect_type=effect_def.effect_type,
                 handler=effect_def.handler,
@@ -223,8 +222,8 @@ class EnvironmentImpl(Environment):
             execution_plan=self._operation_engine.query(query=query, message_context=message_context),
         )
 
-    @classmethod
-    def _make_message_context(cls, message_id: MessageId | None) -> MessageContext:
+    @staticmethod
+    def _make_message_context(message_id: MessageId | None) -> MessageContext:
         return MessageContext(message_id=uuid4().hex if message_id is None else message_id)
 
     async def _run_message[ResultT](
@@ -292,7 +291,7 @@ class EnvironmentImpl(Environment):
             )
         raise NotImplementedError(instruction)
 
-    def _get_effect(self, effect_type: type[Effect[Any]]) -> PreparedEffect:
+    def _get_effect(self, effect_type: type[Effect[Any]]) -> _PreparedEffect:
         prepared_effect = self._type_to_effect.get(effect_type)
         if prepared_effect is None:
             raise EffectNotDefinedError(effect_type)
@@ -313,7 +312,7 @@ class EnvironmentImpl(Environment):
 
     async def _call_effect_handler(
         self,
-        prepared_effect: PreparedEffect,
+        prepared_effect: _PreparedEffect,
         effect_call: EffectCall,
         scopes: Scopes,
         transaction_scope: Scope | None,

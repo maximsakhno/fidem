@@ -126,7 +126,9 @@ class ScopeClosedError(Exception):
         super().__init__(key)
 
 
-async def exit_context_manager(context_manager: AbstractAsyncContextManager[object], exc: BaseException | None) -> None:
+async def _exit_context_manager(
+    context_manager: AbstractAsyncContextManager[object], exc: BaseException | None
+) -> None:
     if exc is None:
         await context_manager.__aexit__(None, None, None)
     else:
@@ -179,7 +181,7 @@ class Scope:
         if self._is_closed:
             # Nobody would close a dependency resolved after its scope had been closed.
             error = ScopeClosedError(key)
-            await exit_context_manager(context_manager, error)
+            await _exit_context_manager(context_manager, error)
             raise error
         self._dependencies[key] = dependency
         self._context_managers[key] = context_manager
@@ -191,18 +193,18 @@ class Scope:
             errors: MutableSequence[BaseException] = []
             for context_manager in reversed(tuple(self._context_managers.values())):
                 try:
-                    await exit_context_manager(context_manager, exc)
+                    await _exit_context_manager(context_manager, exc)
                 except BaseException as close_exc:  # noqa: BLE001 - the remaining dependencies must be closed too
                     errors.append(close_exc)
             self._context_managers.clear()
-            raise_close_errors(exc, errors)
+            _raise_close_errors(exc, errors)
 
 
 type Scopes = Sequence[Scope]
 """Scopes indexed by lifetime."""
 
 
-def raise_close_errors(exc: BaseException | None, errors: Sequence[BaseException]) -> None:
+def _raise_close_errors(exc: BaseException | None, errors: Sequence[BaseException]) -> None:
     """Raises closing errors, the caller reraises the scope error itself when it is not raised here."""
     if isinstance(exc, Exception) or exc is None:
         if exc is None and len(errors) == 1:
@@ -216,7 +218,7 @@ def raise_close_errors(exc: BaseException | None, errors: Sequence[BaseException
 
 
 @dataclass(slots=True, frozen=True)
-class ScopedDependencyArgument:
+class _ScopedDependencyArgument:
     argument: DependencyArgument
     lifetime: EffectDependencyLifetime
 
@@ -224,14 +226,14 @@ class ScopedDependencyArgument:
         return self.argument.get(scopes[self.lifetime].dependencies)
 
 
-def get_scoped_arguments(
-    arguments: Sequence[ScopedDependencyArgument], scopes: Scopes
+def _get_scoped_arguments(
+    arguments: Sequence[_ScopedDependencyArgument], scopes: Scopes
 ) -> Mapping[ParameterName, object]:
     return {scoped.argument.parameter: scoped.get(scopes) for scoped in arguments}
 
 
 @dataclass(slots=True, frozen=True)
-class EffectResolutionStep:
+class _EffectResolutionStep:
     """Resolves one dependency from the dependencies in the scopes and puts it into its scope."""
 
     # Several handler calls share these scopes, even concurrently through middlewares, so the first call resolves.
@@ -241,7 +243,7 @@ class EffectResolutionStep:
     )
 
     provider: EffectProvider
-    arguments: Sequence[ScopedDependencyArgument]
+    arguments: Sequence[_ScopedDependencyArgument]
 
     async def run(self, scopes: Scopes) -> None:
         scope = scopes[self.provider.lifetime]
@@ -253,7 +255,7 @@ class EffectResolutionStep:
                     await self._resolve(scope, scopes)
 
     async def _resolve(self, scope: Scope, scopes: Scopes) -> None:
-        context_manager = self.provider.factory(**get_scoped_arguments(self.arguments, scopes))
+        context_manager = self.provider.factory(**_get_scoped_arguments(self.arguments, scopes))
         dependency = await context_manager.__aenter__()
         await scope.add(self.provider.key, dependency, context_manager)
 
@@ -261,15 +263,15 @@ class EffectResolutionStep:
 @dataclass(slots=True, frozen=True)
 class PreparedEffectHandler:
     handler: Callable[..., Awaitable[object]]
-    steps: Sequence[EffectResolutionStep]
-    arguments: Sequence[ScopedDependencyArgument]
+    steps: Sequence[_EffectResolutionStep]
+    arguments: Sequence[_ScopedDependencyArgument]
 
     async def resolve(self, scopes: Scopes) -> None:
         for step in self.steps:
             await step.run(scopes)
 
     async def call(self, scopes: Scopes) -> object:
-        return await self.handler(**get_scoped_arguments(self.arguments, scopes))
+        return await self.handler(**_get_scoped_arguments(self.arguments, scopes))
 
 
 class EffectDependencyContainer:
@@ -300,7 +302,7 @@ class EffectDependencyContainer:
             **{key: provider.lifetime for key, provider in self._graph.providers.items()},
         }
         self._check_lifetimes()
-        self._application_steps: Mapping[DependencyKey, EffectResolutionStep] = {
+        self._application_steps: Mapping[DependencyKey, _EffectResolutionStep] = {
             key: self._make_step(self._graph.providers[key], self._graph.arguments[key])
             for key in self._graph.order
             if self._graph.providers[key].lifetime == EffectDependencyLifetime.APPLICATION
@@ -312,12 +314,12 @@ class EffectDependencyContainer:
                 if self._lifetimes[argument.key] > self._lifetimes[key]:
                     raise DependencyLifetimeError(key, argument.key)
 
-    def _make_step(self, provider: EffectProvider, arguments: Sequence[DependencyArgument]) -> EffectResolutionStep:
-        return EffectResolutionStep(provider=provider, arguments=self._scope_arguments(arguments))
+    def _make_step(self, provider: EffectProvider, arguments: Sequence[DependencyArgument]) -> _EffectResolutionStep:
+        return _EffectResolutionStep(provider=provider, arguments=self._scope_arguments(arguments))
 
-    def _scope_arguments(self, arguments: Sequence[DependencyArgument]) -> Sequence[ScopedDependencyArgument]:
+    def _scope_arguments(self, arguments: Sequence[DependencyArgument]) -> Sequence[_ScopedDependencyArgument]:
         return tuple(
-            ScopedDependencyArgument(argument=argument, lifetime=self._lifetimes[argument.key])
+            _ScopedDependencyArgument(argument=argument, lifetime=self._lifetimes[argument.key])
             for argument in arguments
         )
 
@@ -351,16 +353,16 @@ class EffectDependencyContainer:
             if self._lifetimes[argument.key] == EffectDependencyLifetime.TRANSACTION:
                 raise TransactionDependencyAccessError(argument.consumer, argument.key)
 
-    @classmethod
-    def make_message_scope(cls, message: Message[Any], message_context: MessageContext) -> Scope:
+    @staticmethod
+    def make_message_scope(message: Message[Any], message_context: MessageContext) -> Scope:
         return Scope(make_message_dependencies(message, message_context))
 
-    @classmethod
-    def make_transaction_scope(cls, transaction_context: TransactionContext) -> Scope:
+    @staticmethod
+    def make_transaction_scope(transaction_context: TransactionContext) -> Scope:
         return Scope({TRANSACTION_CONTEXT_KEY: transaction_context})
 
-    @classmethod
-    def make_effect_scope(cls, effect: Effect[Any], effect_context: EffectContext) -> Scope:
+    @staticmethod
+    def make_effect_scope(effect: Effect[Any], effect_context: EffectContext) -> Scope:
         return Scope({EFFECT_KEY: effect, EFFECT_CONTEXT_KEY: effect_context})
 
     async def start(self) -> Scope:
@@ -383,10 +385,9 @@ class EffectDependencyContainer:
             raise
         return scope
 
-    @classmethod
+    @staticmethod
     async def _start_dependency(
-        cls,
-        step: EffectResolutionStep,
+        step: _EffectResolutionStep,
         scopes: Scopes,
         dependency_events: Collection[Event],
         event: Event,
@@ -410,11 +411,11 @@ class EffectDependencyContainer:
             try:
                 for dependent_key in dependents[key]:
                     await events[dependent_key].wait()
-                await exit_context_manager(context_managers[key], exc)
+                await _exit_context_manager(context_managers[key], exc)
             except BaseException as close_exc:  # noqa: BLE001 - the remaining dependencies must be closed too
                 errors.append(close_exc)
             finally:
                 events[key].set()
 
         await gather(*(close(key) for key in context_managers))
-        raise_close_errors(exc, errors)
+        _raise_close_errors(exc, errors)

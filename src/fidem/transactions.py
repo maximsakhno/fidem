@@ -26,12 +26,12 @@ type WriteTransactionEffectful[ResultT, EventT: Event = Never] = Effectful[Resul
 """The generator of a write transaction, `EventT` are the events of the transaction."""
 
 # Declared explicitly because type checkers infer the type parameters of frozen dataclasses as invariant.
-ParamsT = ParamSpec("ParamsT")
-ResultT_co = TypeVar("ResultT_co", covariant=True)
-EventT_co = TypeVar("EventT_co", bound="Event", covariant=True, default=Never)
+_ParamsT = ParamSpec("_ParamsT")
+_ResultT_co = TypeVar("_ResultT_co", covariant=True)
+_EventT_co = TypeVar("_EventT_co", bound="Event", covariant=True, default=Never)
 
 
-def check_transaction_function(function: Callable[..., object]) -> None:
+def _check_transaction_function(function: Callable[..., object]) -> None:
     # Imported here because fidem.di.core imports this module through fidem.messages.
     from fidem.di.core import check_generator_function
 
@@ -39,53 +39,53 @@ def check_transaction_function(function: Callable[..., object]) -> None:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class ReadTransaction(Generic[ParamsT, ResultT_co]):  # noqa: UP046 - type parameters would be invariant
+class ReadTransaction(Generic[_ParamsT, _ResultT_co]):  # noqa: UP046 - type parameters would be invariant
     """Database reads in one transaction, a call makes the effect that runs them."""
 
     read_only: ClassVar[bool] = True
     effect_types: ClassVar[tuple[type[Effect[Any]], ...]] = (DatabaseReadEffect,)
     """Runtime counterpart of the effects of `ReadTransactionEffectful`."""
 
-    function: Callable[ParamsT, ReadTransactionEffectful[ResultT_co]]
+    function: Callable[_ParamsT, ReadTransactionEffectful[_ResultT_co]]
 
     def __post_init__(self) -> None:
-        check_transaction_function(self.function)
+        _check_transaction_function(self.function)
 
-    def __call__(self, *args: ParamsT.args, **kwargs: ParamsT.kwargs) -> "ReadTransactionEffect[ResultT_co]":
+    def __call__(self, *args: _ParamsT.args, **kwargs: _ParamsT.kwargs) -> "ReadTransactionEffect[_ResultT_co]":
         return ReadTransactionEffect(transaction=self, args=args, kwargs=kwargs)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
-class WriteTransaction(Generic[ParamsT, ResultT_co, EventT_co]):
+class WriteTransaction(Generic[_ParamsT, _ResultT_co, _EventT_co]):
     """Database effects in one transaction, a call makes the effect that runs them."""
 
     read_only: ClassVar[bool] = False
     effect_types: ClassVar[tuple[type[Effect[Any]], ...]] = (DatabaseEffect,)
     """Runtime counterpart of the effects of `WriteTransactionEffectful`."""
 
-    function: Callable[ParamsT, WriteTransactionEffectful[ResultT_co, EventT_co]]
+    function: Callable[_ParamsT, WriteTransactionEffectful[_ResultT_co, _EventT_co]]
 
     def __post_init__(self) -> None:
-        check_transaction_function(self.function)
+        _check_transaction_function(self.function)
 
     def __call__(
         self,
-        *args: ParamsT.args,
-        **kwargs: ParamsT.kwargs,
-    ) -> "WriteTransactionEffect[ResultT_co, EventT_co]":
+        *args: _ParamsT.args,
+        **kwargs: _ParamsT.kwargs,
+    ) -> "WriteTransactionEffect[_ResultT_co, _EventT_co]":
         return WriteTransactionEffect(transaction=self, args=args, kwargs=kwargs)
 
 
 @dataclass(frozen=True, slots=True)
-class ReadTransactionEffect(ControlEffect[ResultT_co]):
-    transaction: ReadTransaction[..., ResultT_co]
+class ReadTransactionEffect(ControlEffect[_ResultT_co]):
+    transaction: ReadTransaction[..., _ResultT_co]
     args: Sequence[object]
     kwargs: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
-class WriteTransactionEffect(ControlEffect[ResultT_co], Generic[ResultT_co, EventT_co]):
-    transaction: WriteTransaction[..., ResultT_co, EventT_co]
+class WriteTransactionEffect(ControlEffect[_ResultT_co], Generic[_ResultT_co, _EventT_co]):
+    transaction: WriteTransaction[..., _ResultT_co, _EventT_co]
     args: Sequence[object]
     kwargs: Mapping[str, object]
 
