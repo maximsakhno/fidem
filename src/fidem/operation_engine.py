@@ -11,6 +11,7 @@ from fidem.di.core import DependencyKey, make_message_dependencies
 from fidem.effects import (
     ControlEffect,
     DatabaseEffect,
+    DatabaseReadEffect,
     Effect,
     EffectContext,
     Effectful,
@@ -19,6 +20,7 @@ from fidem.effects import (
     ExternalWriteEffect,
     InternalEffect,
 )
+from fidem.errors import Error
 from fidem.guards import GuardContainer, GuardDef, GuardedFunction, GuardResolutionStep, GuardValues
 from fidem.messages import (
     QUERY_EFFECT_TYPES,
@@ -35,7 +37,13 @@ from fidem.messages import (
     StagedHandler,
 )
 from fidem.outbox import OutboxEvent, WriteOutboxEffect
-from fidem.transactions import AnyTransaction, ReadTransactionEffect, WriteTransactionEffect
+from fidem.transactions import (
+    IMPLICIT_READ_TRANSACTION,
+    IMPLICIT_WRITE_TRANSACTION,
+    AnyTransaction,
+    ReadTransactionEffect,
+    WriteTransactionEffect,
+)
 
 __all__ = [
     "AnyEventHandlerDef",
@@ -202,54 +210,54 @@ class OperationEngine(ABC):
         raise NotImplementedError
 
 
-class DuplicateCommandDefError(Exception):
+class DuplicateCommandDefError(Error):
     def __init__(self, command_defs: Collection[CommandDef[Any]]) -> None:
         super().__init__(command_defs)
 
 
-class DuplicateQueryDefError(Exception):
+class DuplicateQueryDefError(Error):
     def __init__(self, query_defs: Collection[QueryDef[Any]]) -> None:
         super().__init__(query_defs)
 
 
-class DuplicateEventDefError(Exception):
+class DuplicateEventDefError(Error):
     """Events have the same type or the same name."""
 
     def __init__(self, event_defs: Collection[EventDef[Any]]) -> None:
         super().__init__(event_defs)
 
 
-class DuplicateEventHandlerDefError(Exception):
+class DuplicateEventHandlerDefError(Error):
     def __init__(self, handler_defs: Collection[AnyEventHandlerDef]) -> None:
         super().__init__(handler_defs)
 
 
-class DuplicateMessageMiddlewareDefError(Exception):
+class DuplicateMessageMiddlewareDefError(Error):
     def __init__(self, middleware_defs: Collection[MessageMiddlewareDef]) -> None:
         super().__init__(middleware_defs)
 
 
-class CommandNotDefinedError(Exception):
+class CommandNotDefinedError(Error):
     def __init__(self, command_type: type[Command[Any]]) -> None:
         super().__init__(command_type)
 
 
-class QueryNotDefinedError(Exception):
+class QueryNotDefinedError(Error):
     def __init__(self, query_type: type[Query[Any]]) -> None:
         super().__init__(query_type)
 
 
-class EventNotDefinedError(Exception):
+class EventNotDefinedError(Error):
     def __init__(self, event_type: type[Event]) -> None:
         super().__init__(event_type)
 
 
-class UnsupportedEffectError(Exception):
+class UnsupportedEffectError(Error):
     def __init__(self, effect: Effect[Any]) -> None:
         super().__init__(effect)
 
 
-class UnsupportedAtomicResultError(Exception):
+class UnsupportedAtomicResultError(Error):
     """An atomic handler returned neither a write transaction effect nor an external write effect."""
 
     def __init__(self, result: object) -> None:
@@ -551,6 +559,7 @@ class OperationEngineImpl(OperationEngine):
                     allowed_effect_types=write.transaction.effect_types,
                     generate_effect_id=generate_effect_id,
                     events=events,
+                    in_transaction=True,
                 ),
             )
             return (yield RunTransactionInstruction(transaction=write.transaction, plan=transaction_plan))
@@ -632,6 +641,8 @@ class OperationEngineImpl(OperationEngine):
         allowed_effect_types: tuple[type[Effect[Any]], ...],
         generate_effect_id: Callable[[], EffectId],
         events: _EventBuffer | None = None,
+        *,
+        in_transaction: bool = False,
     ) -> _PlanEffect:
         """`events` is where the published events go, `None` forbids publishing."""
         return partial(
@@ -640,6 +651,7 @@ class OperationEngineImpl(OperationEngine):
             generate_effect_id=generate_effect_id,
             execution=execution,
             events=events,
+            in_transaction=in_transaction,
         )
 
     def _make_instruction(
@@ -649,6 +661,7 @@ class OperationEngineImpl(OperationEngine):
         generate_effect_id: Callable[[], EffectId],
         execution: _Execution,
         events: _EventBuffer | None,
+        in_transaction: bool,
     ) -> Iterable[Instruction[Any]]:
         if isinstance(effect, Event) and events is not None:
             self._publish(
@@ -661,6 +674,16 @@ class OperationEngineImpl(OperationEngine):
             return ()
         if not isinstance(effect, allowed_effect_types):
             raise _EngineError(UnsupportedEffectError(effect))
+        if isinstance(effect, DatabaseEffect) and not in_transaction:
+            # A database effect outside a transaction runs as if the effectful called a transaction of this effect.
+            return self._make_instruction(
+                effect=self._call_in_implicit_transaction(effect),
+                allowed_effect_types=allowed_effect_types,
+                generate_effect_id=generate_effect_id,
+                execution=execution,
+                events=events,
+                in_transaction=in_transaction,
+            )
         if isinstance(effect, self._HANDLED_EFFECT_TYPES):
             return CallEffectHandlerInstruction(
                 message_context=execution.message_context,
@@ -676,12 +699,21 @@ class OperationEngineImpl(OperationEngine):
                 generate_effect_id=generate_effect_id,
                 # Events of a write transaction go where the events around it go.
                 events=None if effect.transaction.read_only else events,
+                in_transaction=True,
             )
             return RunTransactionInstruction(
                 transaction=effect.transaction,
                 plan=self._run_transaction(effect, plan_effect),
             )
         raise _EngineError(UnsupportedEffectError(effect))
+
+    @staticmethod
+    def _call_in_implicit_transaction(
+        effect: DatabaseEffect[Any],
+    ) -> ReadTransactionEffect[Any] | WriteTransactionEffect[Any]:
+        if isinstance(effect, DatabaseReadEffect):
+            return IMPLICIT_READ_TRANSACTION(effect)
+        return IMPLICIT_WRITE_TRANSACTION(effect)
 
     def _publish(
         self,

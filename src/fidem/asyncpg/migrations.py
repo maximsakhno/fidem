@@ -8,6 +8,8 @@ from typing import Final, cast
 
 from asyncpg import Connection, Pool
 
+from fidem.errors import Error
+
 __all__ = [
     "DuplicateMigrationSectionError",
     "MigrationChangedError",
@@ -63,12 +65,12 @@ def load_section(name: SectionName, directory: Traversable) -> MigrationSection:
     return MigrationSection(name=name, migrations=tuple(path.read_text(encoding="utf-8") for path in paths))
 
 
-class DuplicateMigrationSectionError(Exception):
+class DuplicateMigrationSectionError(Error):
     def __init__(self, names: Collection[SectionName]) -> None:
         super().__init__(names)
 
 
-class MigrationChangedError(Exception):
+class MigrationChangedError(Error):
     def __init__(self, section: SectionName, version: MigrationVersion) -> None:
         super().__init__(section, version)
 

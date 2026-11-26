@@ -25,7 +25,7 @@ from fidem.environment import (
     EnvironmentNotStartedError,
 )
 from fidem.guards import GuardDef
-from fidem.messages import AtomicEffectful, Command, MessageContext, QueryEffect
+from fidem.messages import AtomicEffectful, Command, MessageContext, QueryEffect, StagedEffectful
 from fidem.operation_engine import (
     AtomicCommandDef,
     CallEffectHandlerInstruction,
@@ -37,7 +37,7 @@ from fidem.operation_engine import (
     RunTransactionInstruction,
     StagedCommandDef,
 )
-from fidem.testing import YeildStep
+from fidem.testing import YieldStep
 from fidem.transactions import (
     TransactionContext,
     WriteTransaction,
@@ -95,7 +95,7 @@ class TestExecute:
 
         message_contexts: MutableSequence[MessageContext] = []
         operation_engine_mock = make_operation_engine_mock(
-            GeneratorFunctionStub(steps=[YeildStep(make_instruction(), None)])
+            GeneratorFunctionStub(steps=[YieldStep(make_instruction(), None)])
         )
         environment = EnvironmentImpl(
             operation_engine=operation_engine_mock,
@@ -138,7 +138,7 @@ class TestExecute:
         instruction = make_instruction()
         effect_result = "effect_result"
         operation_engine_mock = make_operation_engine_mock(
-            GeneratorFunctionStub(steps=[YeildStep(instruction, effect_result)])
+            GeneratorFunctionStub(steps=[YieldStep(instruction, effect_result)])
         )
         environment = EnvironmentImpl(
             operation_engine=operation_engine_mock,
@@ -172,7 +172,7 @@ class TestExecute:
         effect_error = ValueError("effect_error")
         environment = EnvironmentImpl(
             operation_engine=make_operation_engine_mock(
-                GeneratorFunctionStub(steps=[YeildStep(make_instruction(), None)])
+                GeneratorFunctionStub(steps=[YieldStep(make_instruction(), None)])
             ),
             effect_defs=[EffectDef(TestInternalEffect, make_failing_handler(effect_error))],
         )
@@ -204,7 +204,7 @@ class TestExecute:
 
     async def test_raises_effect_not_defined_error_when_effect_not_defined(self) -> None:
         operation_engine_mock = make_operation_engine_mock(
-            GeneratorFunctionStub(steps=[YeildStep(make_instruction(), None)])
+            GeneratorFunctionStub(steps=[YieldStep(make_instruction(), None)])
         )
 
         async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
@@ -218,7 +218,7 @@ class TestExecute:
             pass
 
         operation_engine_mock = make_operation_engine_mock(
-            GeneratorFunctionStub(steps=[YeildStep(UnknownInstruction(), None)])
+            GeneratorFunctionStub(steps=[YieldStep(UnknownInstruction(), None)])
         )
 
         async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
@@ -449,15 +449,15 @@ class TestTransactions:
                 await environment.execute(TestCommand())
 
     async def test_runs_each_database_effect_outside_transaction_in_its_own_transaction(self) -> None:
-        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
-            yield make_instruction(TestDatabaseReadEffect())
-            yield make_instruction(TestDatabaseWriteEffect())
+        def command_handler() -> StagedEffectful[str]:
+            yield from TestDatabaseReadEffect()
+            yield from TestDatabaseWriteEffect()
             return "command_result"
 
         events: MutableSequence[str] = []
         connections: MutableSequence[Connection] = []
         environment = self._make_environment(
-            operation_engine=make_operation_engine_mock(execution_plan),
+            operation_engine=OperationEngineImpl(command_defs=[StagedCommandDef("test", TestCommand, command_handler)]),
             handler=self._make_handler(connections),
             connection_def=self._make_connection_def(events),
         )
@@ -468,7 +468,7 @@ class TestTransactions:
         assert events == ["begin read_only=True", "commit", "begin read_only=False", "commit"]
         assert connections[0] is not connections[1]
 
-    async def test_runs_each_retry_of_database_effect_outside_transaction_in_new_transaction(self) -> None:
+    async def test_runs_retries_of_database_effect_outside_transaction_in_its_implicit_transaction(self) -> None:
         async def handler(connection: Connection) -> str:
             connections.append(connection)
             if len(connections) == 1:
@@ -481,13 +481,13 @@ class TestTransactions:
             except ValueError:
                 return await call_next()
 
-        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
-            return (yield make_instruction(TestDatabaseWriteEffect()))
+        def command_handler() -> StagedEffectful[str]:
+            return (yield from TestDatabaseWriteEffect())
 
         events: MutableSequence[str] = []
         connections: MutableSequence[Connection] = []
         environment = self._make_environment(
-            operation_engine=make_operation_engine_mock(execution_plan),
+            operation_engine=OperationEngineImpl(command_defs=[StagedCommandDef("test", TestCommand, command_handler)]),
             handler=handler,
             connection_def=self._make_connection_def(events),
             middleware_defs=[EffectMiddlewareDef(retry)],
@@ -497,8 +497,8 @@ class TestTransactions:
             result = await environment.execute(TestCommand())
 
         assert result == "effect_result"
-        assert events == ["begin read_only=False", "rollback", "begin read_only=False", "commit"]
-        assert connections[0] is not connections[1]
+        assert events == ["begin read_only=False", "commit"]
+        assert connections[0] is connections[1]
 
     async def test_executes_atomic_command_with_reads_outside_transaction(self) -> None:
         @WriteTransaction
@@ -533,8 +533,6 @@ class TestTransactions:
             yield Connection()
 
         def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
-            yield make_instruction(TestDatabaseReadEffect())
-            yield make_instruction(TestDatabaseWriteEffect())
             yield RunTransactionInstruction(transaction=read_transaction, plan=read_plan())
             yield RunTransactionInstruction(transaction=write_transaction, plan=write_plan())
             return "command_result"
@@ -550,10 +548,8 @@ class TestTransactions:
             await environment.execute(TestCommand())
 
         assert transaction_contexts == [
-            TransactionContext(read_only=True, transaction=None),
-            TransactionContext(read_only=False, transaction=None),
-            TransactionContext(read_only=True, transaction=read_transaction),
-            TransactionContext(read_only=False, transaction=write_transaction),
+            TransactionContext(transaction=read_transaction),
+            TransactionContext(transaction=write_transaction),
         ]
 
     @staticmethod
@@ -684,7 +680,7 @@ class TestEffectHandlerDependencies:
         command = TestCommand()
         instruction = make_instruction()
         environment = EnvironmentImpl(
-            operation_engine=make_operation_engine_mock(GeneratorFunctionStub(steps=[YeildStep(instruction, None)])),
+            operation_engine=make_operation_engine_mock(GeneratorFunctionStub(steps=[YieldStep(instruction, None)])),
             effect_defs=[EffectDef(TestInternalEffect, handler)],
         )
 
@@ -869,7 +865,7 @@ class TestEffectHandlerDependencies:
 
         environment = EnvironmentImpl(
             operation_engine=make_operation_engine_mock(
-                GeneratorFunctionStub(steps=[YeildStep(make_instruction(), None)])
+                GeneratorFunctionStub(steps=[YieldStep(make_instruction(), None)])
             ),
             effect_defs=[EffectDef(TestInternalEffect, handler)],
             dependency_defs=[
@@ -937,7 +933,7 @@ class TestEffectHandlerDependencies:
         instructions = [make_instruction(effect_id=f"test_effect_id{index}") for index in range(effect_count)]
         return EnvironmentImpl(
             operation_engine=make_operation_engine_mock(
-                GeneratorFunctionStub(steps=[YeildStep(instruction, None) for instruction in instructions])
+                GeneratorFunctionStub(steps=[YieldStep(instruction, None) for instruction in instructions])
             ),
             effect_defs=[EffectDef(TestInternalEffect, handler)],
             dependency_defs=dependency_defs,

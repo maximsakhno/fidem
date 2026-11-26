@@ -36,6 +36,7 @@ from fidem.di.core import (
     make_message_dependencies,
 )
 from fidem.effects import Effect, EffectContext
+from fidem.errors import Error
 from fidem.messages import Message, MessageContext
 from fidem.transactions import TransactionContext
 
@@ -82,14 +83,14 @@ class EffectDependencyDef[DependencyT]:
     """The type the factory yields is used when the type is not set."""
 
 
-class DependencyLifetimeError(Exception):
+class DependencyLifetimeError(Error):
     """A dependency requires a dependency with a narrower lifetime."""
 
     def __init__(self, consumer: object, dependency: DependencyKey) -> None:
         super().__init__(consumer, dependency)
 
 
-class TransactionDependencyAccessError(Exception):
+class TransactionDependencyAccessError(Error):
     """The handler of an effect that runs outside transactions requires a transaction dependency."""
 
     def __init__(self, consumer: object, dependency: DependencyKey) -> None:
@@ -121,7 +122,7 @@ class EffectProvider(Provider):
         )
 
 
-class ScopeClosedError(Exception):
+class ScopeClosedError(Error):
     def __init__(self, key: DependencyKey) -> None:
         super().__init__(key)
 

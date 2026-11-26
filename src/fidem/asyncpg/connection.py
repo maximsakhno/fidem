@@ -6,7 +6,8 @@ from asyncpg import Connection, Pool
 
 from fidem.di.core import DependencyName
 from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
-from fidem.transactions import AnyTransaction, TransactionContext
+from fidem.errors import Error
+from fidem.transactions import IMPLICIT_READ_TRANSACTION, AnyTransaction, TransactionContext
 
 __all__ = [
     "AsyncpgConnectionDef",
@@ -18,7 +19,7 @@ __all__ = [
 type IsolationLevel = Literal["read_committed", "repeatable_read", "serializable"]
 
 
-class TransactionRolledBackError(Exception):
+class TransactionRolledBackError(Error):
     """PostgreSQL rolled the transaction back on commit because a query in it had failed."""
 
 
@@ -43,7 +44,11 @@ class AsyncpgConnectionDef(EffectDependencyDef[Connection]):
             factory=self._make_factory(
                 read_options=read_options,
                 write_options=write_options,
-                transaction_options={} if transaction_options is None else dict(transaction_options),
+                transaction_options={
+                    # A single read sees one snapshot anyway, so it needs no transaction.
+                    IMPLICIT_READ_TRANSACTION: AsyncpgTransactionOptions(isolation="read_committed"),
+                    **({} if transaction_options is None else transaction_options),
+                },
             ),
             lifetime=EffectDependencyLifetime.TRANSACTION,
             name=name,
@@ -57,16 +62,16 @@ class AsyncpgConnectionDef(EffectDependencyDef[Connection]):
         transaction_options: Mapping[AnyTransaction, AsyncpgTransactionOptions],
     ) -> Callable[..., AsyncGenerator[Connection]]:
         async def connection(pool: Pool, transaction_context: TransactionContext) -> AsyncGenerator[Connection]:
-            transaction = transaction_context.transaction
             read_only = transaction_context.read_only
-            options = read_options if read_only else write_options
-            if transaction is not None:
-                options = transaction_options.get(transaction, options)
+            options = transaction_options.get(
+                transaction_context.transaction,
+                read_options if read_only else write_options,
+            )
             async with pool.acquire() as proxy:
                 # The pool proxy forwards everything to the connection, and asyncpg documents it as one.
                 connection = cast("Connection", proxy)
-                # A single read sees one snapshot anyway, and so does each query of a read committed transaction.
-                if read_only and (transaction is None or options.isolation == "read_committed"):
+                # Each query of a read committed transaction sees its own snapshot, so reads need no transaction.
+                if read_only and options.isolation == "read_committed":
                     yield connection
                 else:
                     isolation = options.isolation.replace("_", " ").upper()

@@ -1,7 +1,8 @@
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, Never, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Never, ParamSpec, TypeVar
 
+from fidem._functions import check_generator_function
 from fidem.effects import ControlEffect, DatabaseEffect, DatabaseReadEffect, Effect, Effectful
 
 if TYPE_CHECKING:
@@ -9,6 +10,8 @@ if TYPE_CHECKING:
     from fidem.messages import Event
 
 __all__ = [
+    "IMPLICIT_READ_TRANSACTION",
+    "IMPLICIT_WRITE_TRANSACTION",
     "AnyTransaction",
     "ReadTransaction",
     "ReadTransactionEffect",
@@ -31,13 +34,6 @@ _ResultT_co = TypeVar("_ResultT_co", covariant=True)
 _EventT_co = TypeVar("_EventT_co", bound="Event", covariant=True, default=Never)
 
 
-def _check_transaction_function(function: Callable[..., object]) -> None:
-    # Imported here because fidem.di.core imports this module through fidem.messages.
-    from fidem.di.core import check_generator_function
-
-    check_generator_function(function)
-
-
 @dataclass(frozen=True, slots=True, eq=False)
 class ReadTransaction(Generic[_ParamsT, _ResultT_co]):  # noqa: UP046 - type parameters would be invariant
     """Database reads in one transaction, a call makes the effect that runs them."""
@@ -49,7 +45,7 @@ class ReadTransaction(Generic[_ParamsT, _ResultT_co]):  # noqa: UP046 - type par
     function: Callable[_ParamsT, ReadTransactionEffectful[_ResultT_co]]
 
     def __post_init__(self) -> None:
-        _check_transaction_function(self.function)
+        check_generator_function(self.function)
 
     def __call__(self, *args: _ParamsT.args, **kwargs: _ParamsT.kwargs) -> "ReadTransactionEffect[_ResultT_co]":
         return ReadTransactionEffect(transaction=self, args=args, kwargs=kwargs)
@@ -66,7 +62,7 @@ class WriteTransaction(Generic[_ParamsT, _ResultT_co, _EventT_co]):
     function: Callable[_ParamsT, WriteTransactionEffectful[_ResultT_co, _EventT_co]]
 
     def __post_init__(self) -> None:
-        _check_transaction_function(self.function)
+        check_generator_function(self.function)
 
     def __call__(
         self,
@@ -93,8 +89,24 @@ class WriteTransactionEffect(ControlEffect[_ResultT_co], Generic[_ResultT_co, _E
 type AnyTransaction = ReadTransaction[..., Any] | WriteTransaction[..., Any, Any]
 
 
+def _read_effect[ResultT](effect: DatabaseReadEffect[ResultT]) -> ReadTransactionEffectful[ResultT]:
+    return (yield from effect)
+
+
+def _write_effect[ResultT](effect: DatabaseEffect[ResultT]) -> WriteTransactionEffectful[ResultT]:
+    return (yield from effect)
+
+
+IMPLICIT_READ_TRANSACTION: Final = ReadTransaction(_read_effect)
+"""The transaction of a database read outside an explicit transaction, as if the read were called in it."""
+IMPLICIT_WRITE_TRANSACTION: Final = WriteTransaction(_write_effect)
+"""The transaction of a database write outside an explicit transaction, as if the write were called in it."""
+
+
 @dataclass(slots=True, frozen=True)
 class TransactionContext:
-    read_only: bool
-    transaction: AnyTransaction | None
-    """The explicit transaction, `None` for the implicit one around a single effect."""
+    transaction: AnyTransaction
+
+    @property
+    def read_only(self) -> bool:
+        return self.transaction.read_only

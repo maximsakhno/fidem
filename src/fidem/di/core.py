@@ -2,9 +2,11 @@ from collections import defaultdict
 from collections.abc import Callable, Collection, Mapping, MutableMapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
-from inspect import Parameter, Signature, isgeneratorfunction, signature
+from inspect import Parameter, Signature, signature
 from typing import Any, Final, get_args, get_origin
 
+from fidem._functions import UnsupportedFunctionError, check_generator_function
+from fidem.errors import Error
 from fidem.messages import Message, MessageContext
 
 __all__ = [
@@ -49,52 +51,42 @@ MESSAGE_KEY: Final = DependencyKey(name="message", type=Message)
 MESSAGE_CONTEXT_KEY: Final = DependencyKey(name="message_context", type=MessageContext)
 
 
-class UnsupportedFunctionError(Exception):
-    def __init__(self, function: Callable[..., object]) -> None:
-        super().__init__(function)
-
-
-def check_generator_function(function: Callable[..., object]) -> None:
-    if not isgeneratorfunction(function):
-        raise UnsupportedFunctionError(function)
-
-
-class UnsupportedParameterError(Exception):
+class UnsupportedParameterError(Error):
     def __init__(self, function: Callable[..., object], parameter: ParameterName) -> None:
         super().__init__(function, parameter)
 
 
-class MissingAnnotationError(Exception):
+class MissingAnnotationError(Error):
     def __init__(self, function: Callable[..., object], parameter: ParameterName) -> None:
         super().__init__(function, parameter)
 
 
-class UnresolvedAnnotationError(Exception):
+class UnresolvedAnnotationError(Error):
     def __init__(self, function: Callable[..., object]) -> None:
         super().__init__(function)
 
 
-class UnsupportedReturnTypeError(Exception):
+class UnsupportedReturnTypeError(Error):
     def __init__(self, function: Callable[..., object], return_type: object) -> None:
         super().__init__(function, return_type)
 
 
-class DuplicateDependencyError(Exception):
+class DuplicateDependencyError(Error):
     def __init__(self, key: DependencyKey) -> None:
         super().__init__(key)
 
 
-class DependencyNotFoundError(Exception):
+class DependencyNotFoundError(Error):
     def __init__(self, consumer: object, parameter: ParameterName, parameter_type: object) -> None:
         super().__init__(consumer, parameter, parameter_type)
 
 
-class AmbiguousDependencyError(Exception):
+class AmbiguousDependencyError(Error):
     def __init__(self, consumer: object, parameter: ParameterName, candidates: Collection[DependencyKey]) -> None:
         super().__init__(consumer, parameter, candidates)
 
 
-class DependencyCycleError(Exception):
+class DependencyCycleError(Error):
     def __init__(self, cycle: Sequence[object]) -> None:
         super().__init__(cycle)
 
