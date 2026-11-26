@@ -18,13 +18,13 @@ __all__ = [
 ]
 
 
-class MsgspecCodec[T](Codec[T]):
+class _MsgspecCodec[T](Codec[T]):
     # The encoder does not depend on the type, it encodes a value by its runtime type.
     ENCODER: ClassVar[Encoder] = Encoder()
     # Not only `DecodeError`, because bytes that are not UTF-8 fail with `UnicodeDecodeError`.
     DESERIALIZATION_ERRORS: ClassVar[type[ValueError]] = ValueError
 
-    def __init__(self, type_: type[T], strict: bool) -> None:
+    def __init__(self, type_: type[T], *, strict: bool) -> None:
         self._json_schema: JsonSchema = schema(type_)
         self._decoder: Decoder[T] = Decoder(type_, strict=strict)
 
@@ -75,7 +75,7 @@ class MsgspecSerializer(Serializer):
     @override
     def _make_codec(self, type_: object) -> Codec[Any]:
         try:
-            return MsgspecCodec(type_=cast(type[Any], type_), strict=self._strict)
+            return _MsgspecCodec(type_=cast(type[Any], type_), strict=self._strict)
         # `NameError` comes from an unresolved forward reference.
         except (TypeError, NameError) as e:
             raise UnsupportedTypeError(type_) from e

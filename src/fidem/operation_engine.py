@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
-from collections import defaultdict
-from collections.abc import Callable, Collection, Hashable, Iterable, Mapping, MutableMapping, MutableSequence, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partial
 from random import Random
 from typing import Any, Final
 
+from fidem._validation import check_unique
 from fidem.di.core import DependencyKey, make_message_dependencies
 from fidem.effects import (
     ControlEffect,
@@ -256,7 +256,7 @@ class UnsupportedAtomicResultError(Exception):
         super().__init__(result)
 
 
-class EngineError(Exception):
+class _EngineError(Exception):
     """Carries an error of the engine past the handlers and the middlewares to the caller."""
 
     def __init__(self, error: Exception) -> None:
@@ -264,7 +264,7 @@ class EngineError(Exception):
         self.error: Exception = error
 
 
-class EffectIdGenerator:
+class _EffectIdGenerator:
     """Generates deterministic effect ids and seeds lazily because seeding is costly and many guards yield nothing."""
 
     def __init__(self, seed: str) -> None:
@@ -278,62 +278,49 @@ class EffectIdGenerator:
 
 
 @dataclass(frozen=True, slots=True)
-class PreparedGuard:
+class _PreparedGuard:
     step: GuardResolutionStep
     seed: str
     """Identifies the guard in the seed of the ids of its effects."""
 
 
 @dataclass(frozen=True, slots=True)
-class PreparedMiddleware:
+class _PreparedMiddleware:
     middleware: GuardedFunction
     seed: str
     """Identifies the middleware in the seed of the ids of its effects."""
 
 
-type AnyMessageDef = CommandDef[Any] | QueryDef[Any] | AnyEventHandlerDef
+type _AnyMessageDef = CommandDef[Any] | QueryDef[Any] | AnyEventHandlerDef
 
 
 @dataclass(frozen=True, slots=True)
-class PreparedMessage[MessageDefT: AnyMessageDef]:
+class _PreparedMessage[MessageDefT: _AnyMessageDef]:
     message_def: MessageDefT
-    guards: Sequence[PreparedGuard]
+    guards: Sequence[_PreparedGuard]
     """Guards of the middlewares and the handler, each one after its guards."""
-    middlewares: Sequence[PreparedMiddleware]
+    middlewares: Sequence[_PreparedMiddleware]
     """Middlewares from the outer one."""
     handler: GuardedFunction
 
 
 @dataclass(frozen=True, slots=True)
-class PreparedEvent:
+class _PreparedEvent:
     event_def: EventDef[Any]
-    handlers: Sequence[PreparedMessage[AnyEventHandlerDef]]
+    handlers: Sequence[_PreparedMessage[AnyEventHandlerDef]]
 
 
 @dataclass(frozen=True, slots=True)
-class Execution:
+class _Execution:
     message: Message[Any]
     message_context: MessageContext
     values: GuardValues
     seed: str
 
 
-type PlanEffect = Callable[[Effect[Any]], Iterable[Instruction[Any]]]
-type EventBuffer = MutableSequence[OutboxEvent]
+type _PlanEffect = Callable[[Effect[Any]], Iterable[Instruction[Any]]]
+type _EventBuffer = MutableSequence[OutboxEvent]
 """Events published so far by a transaction or a staged handler."""
-
-
-def check_unique[DefT](
-    defs: Iterable[DefT],
-    get_key: Callable[[DefT], Hashable],
-    duplicate_error_type: Callable[[Sequence[DefT]], Exception],
-) -> None:
-    key_to_defs: MutableMapping[Hashable, MutableSequence[DefT]] = defaultdict(list)
-    for definition in defs:
-        key_to_defs[get_key(definition)].append(definition)
-    for same_key_defs in key_to_defs.values():
-        if len(same_key_defs) > 1:
-            raise duplicate_error_type(same_key_defs)
 
 
 class OperationEngineImpl(OperationEngine):
@@ -360,33 +347,32 @@ class OperationEngineImpl(OperationEngine):
                 *(event_def.event_type for event_def in event_defs),
             ),
         )
-        self._type_to_command: Mapping[type[Message[Any]], PreparedMessage[CommandDef[Any]]] = {
+        self._type_to_command: Mapping[type[Message[Any]], _PreparedMessage[CommandDef[Any]]] = {
             command_type: self._prepare_message(command_type, command_def, middleware_defs)
             for command_type, command_def in type_to_command_def.items()
         }
-        self._type_to_query: Mapping[type[Message[Any]], PreparedMessage[QueryDef[Any]]] = {
+        self._type_to_query: Mapping[type[Message[Any]], _PreparedMessage[QueryDef[Any]]] = {
             query_type: self._prepare_message(query_type, query_def, middleware_defs)
             for query_type, query_def in type_to_query_def.items()
         }
-        self._type_to_event: Mapping[type[Message[Any]], PreparedEvent] = {
+        self._type_to_event: Mapping[type[Message[Any]], _PreparedEvent] = {
             event_def.event_type: self._prepare_event(event_def, middleware_defs) for event_def in event_defs
         }
 
-    @classmethod
+    @staticmethod
     def _make_type_to_def[MessageDefT: CommandDef[Any] | QueryDef[Any]](
-        cls,
         message_defs: Collection[MessageDefT],
         duplicate_error_type: Callable[[Sequence[MessageDefT]], Exception],
     ) -> Mapping[type[Message[Any]], MessageDefT]:
         check_unique(message_defs, lambda message_def: message_def.message_type, duplicate_error_type)
         return {message_def.message_type: message_def for message_def in message_defs}
 
-    @classmethod
-    def _check_middleware_defs(cls, middleware_defs: Collection[MessageMiddlewareDef]) -> None:
+    @staticmethod
+    def _check_middleware_defs(middleware_defs: Collection[MessageMiddlewareDef]) -> None:
         check_unique(middleware_defs, lambda middleware_def: middleware_def.name, DuplicateMessageMiddlewareDefError)
 
-    @classmethod
-    def _check_event_defs(cls, event_defs: Collection[EventDef[Any]]) -> None:
+    @staticmethod
+    def _check_event_defs(event_defs: Collection[EventDef[Any]]) -> None:
         # The outbox keeps the name of the event, so the name has to find the type when the event is read back.
         check_unique(event_defs, lambda event_def: event_def.event_type, DuplicateEventDefError)
         check_unique(event_defs, lambda event_def: event_def.name, DuplicateEventDefError)
@@ -397,12 +383,12 @@ class OperationEngineImpl(OperationEngine):
                 duplicate_error_type=DuplicateEventHandlerDefError,
             )
 
-    def _prepare_message[MessageDefT: AnyMessageDef](
+    def _prepare_message[MessageDefT: _AnyMessageDef](
         self,
         message_type: type[Message[Any]],
         message_def: MessageDefT,
         middleware_defs: Sequence[MessageMiddlewareDef],
-    ) -> PreparedMessage[MessageDefT]:
+    ) -> _PreparedMessage[MessageDefT]:
         if message_def.middleware_defs is not None:
             self._check_middleware_defs(message_def.middleware_defs)
             middleware_defs = message_def.middleware_defs
@@ -410,13 +396,13 @@ class OperationEngineImpl(OperationEngine):
             message_type=message_type,
             functions=(*(middleware_def.middleware for middleware_def in middleware_defs), message_def.handler),
         )
-        return PreparedMessage(
+        return _PreparedMessage(
             message_def=message_def,
             guards=tuple(
-                PreparedGuard(step=step, seed=self._make_guard_seed(step.provider.key)) for step in guards.steps
+                _PreparedGuard(step=step, seed=self._make_guard_seed(step.provider.key)) for step in guards.steps
             ),
             middlewares=tuple(
-                PreparedMiddleware(middleware=middleware, seed=f"#middleware:{middleware_def.name}")
+                _PreparedMiddleware(middleware=middleware, seed=f"#middleware:{middleware_def.name}")
                 for middleware_def, middleware in zip(middleware_defs, guards.functions[:-1], strict=True)
             ),
             handler=guards.functions[-1],
@@ -426,9 +412,9 @@ class OperationEngineImpl(OperationEngine):
         self,
         event_def: EventDef[Any],
         middleware_defs: Sequence[MessageMiddlewareDef],
-    ) -> PreparedEvent:
+    ) -> _PreparedEvent:
         # Handlers are prepared ahead of their execution so that errors in their definitions show up on start.
-        return PreparedEvent(
+        return _PreparedEvent(
             event_def=event_def,
             handlers=tuple(
                 self._prepare_message(event_def.event_type, handler_def, middleware_defs)
@@ -436,8 +422,8 @@ class OperationEngineImpl(OperationEngine):
             ),
         )
 
-    @classmethod
-    def _make_guard_seed(cls, key: DependencyKey) -> str:
+    @staticmethod
+    def _make_guard_seed(key: DependencyKey) -> str:
         dependency_type = key.type
         if isinstance(dependency_type, type):
             return f":{key.name}:{dependency_type.__module__}.{dependency_type.__qualname__}"
@@ -453,7 +439,7 @@ class OperationEngineImpl(OperationEngine):
             raise CommandNotDefinedError(type(command))
         execution_mode = prepared_command.message_def.execution_mode
         if execution_mode != ExecutionMode.EPHEMERAL:
-            raise NotImplementedError(f"Execution mode {execution_mode} is not implemented yet")
+            raise NotImplementedError(f"_Execution mode {execution_mode} is not implemented yet")
         return (yield from self._execute(prepared_command, command, message_context))
 
     def query[ResultT](
@@ -466,25 +452,25 @@ class OperationEngineImpl(OperationEngine):
             raise QueryNotDefinedError(type(query))
         return (yield from self._execute(prepared_query, query, message_context))
 
-    def _execute[MessageDefT: AnyMessageDef](
+    def _execute[MessageDefT: _AnyMessageDef](
         self,
-        prepared_message: PreparedMessage[MessageDefT],
+        prepared_message: _PreparedMessage[MessageDefT],
         message: Message[Any],
         message_context: MessageContext,
     ) -> ExecutionPlan[Any]:
         try:
             return (yield from self._run_chain(prepared_message, message, message_context))
-        except EngineError as exc:
+        except _EngineError as exc:
             raise exc.error.with_traceback(exc.__traceback__) from None
 
-    def _run_chain[MessageDefT: AnyMessageDef](
+    def _run_chain[MessageDefT: _AnyMessageDef](
         self,
-        prepared_message: PreparedMessage[MessageDefT],
+        prepared_message: _PreparedMessage[MessageDefT],
         message: Message[Any],
         message_context: MessageContext,
     ) -> ExecutionPlan[Any]:
         message_id = message_context.message_id
-        execution = Execution(
+        execution = _Execution(
             message=message,
             message_context=message_context,
             values=make_message_dependencies(message, message_context),
@@ -498,7 +484,7 @@ class OperationEngineImpl(OperationEngine):
                 plan_effect=self._make_plan_effect(
                     execution=execution,
                     allowed_effect_types=QUERY_EFFECT_TYPES,
-                    generate_effect_id=EffectIdGenerator(execution.seed + guard.seed),
+                    generate_effect_id=_EffectIdGenerator(execution.seed + guard.seed),
                 ),
             )
 
@@ -519,7 +505,7 @@ class OperationEngineImpl(OperationEngine):
             )
         return (yield from run_inner())
 
-    def _run_query_handler(self, execution: Execution, handler: GuardedFunction) -> ExecutionPlan[Any]:
+    def _run_query_handler(self, execution: _Execution, handler: GuardedFunction) -> ExecutionPlan[Any]:
         # Effect ids are derived from the message id so that replaying a message reproduces them.
         return (
             yield from self._run(
@@ -527,13 +513,13 @@ class OperationEngineImpl(OperationEngine):
                 plan_effect=self._make_plan_effect(
                     execution=execution,
                     allowed_effect_types=QUERY_EFFECT_TYPES,
-                    generate_effect_id=EffectIdGenerator(execution.seed),
+                    generate_effect_id=_EffectIdGenerator(execution.seed),
                 ),
             )
         )
 
-    def _run_staged_handler(self, execution: Execution, handler: GuardedFunction) -> ExecutionPlan[Any]:
-        generate_effect_id = EffectIdGenerator(execution.seed)
+    def _run_staged_handler(self, execution: _Execution, handler: GuardedFunction) -> ExecutionPlan[Any]:
+        generate_effect_id = _EffectIdGenerator(execution.seed)
         # Each run buffers its own events, so a failed run publishes nothing.
         return self._run_writing_events(
             run=lambda plan_effect: self._run(handler.call(execution.values), plan_effect),
@@ -545,9 +531,9 @@ class OperationEngineImpl(OperationEngine):
             ),
         )
 
-    def _run_atomic_handler(self, execution: Execution, handler: GuardedFunction) -> ExecutionPlan[Any]:
+    def _run_atomic_handler(self, execution: _Execution, handler: GuardedFunction) -> ExecutionPlan[Any]:
         # The write continues the ids of the reads, as if the handler yielded it.
-        generate_effect_id = EffectIdGenerator(execution.seed)
+        generate_effect_id = _EffectIdGenerator(execution.seed)
         write = yield from self._run(
             effectful=handler.call(execution.values),
             plan_effect=self._make_plan_effect(
@@ -575,16 +561,15 @@ class OperationEngineImpl(OperationEngine):
                 generate_effect_id=generate_effect_id,
             )
             return (yield from plan_effect(write))
-        raise EngineError(UnsupportedAtomicResultError(write))
+        raise _EngineError(UnsupportedAtomicResultError(write))
 
-    @classmethod
+    @staticmethod
     def _run_writing_events[ResultT](
-        cls,
-        run: Callable[[PlanEffect], ExecutionPlan[ResultT]],
-        make_plan_effect: Callable[[EventBuffer], PlanEffect],
+        run: Callable[[_PlanEffect], ExecutionPlan[ResultT]],
+        make_plan_effect: Callable[[_EventBuffer], _PlanEffect],
     ) -> ExecutionPlan[ResultT]:
         """Runs the plan and then writes the events it published to the outbox."""
-        events: EventBuffer = []
+        events: _EventBuffer = []
         plan_effect = make_plan_effect(events)
         result = yield from run(plan_effect)
         if events:
@@ -593,8 +578,8 @@ class OperationEngineImpl(OperationEngine):
 
     def _run_middleware(
         self,
-        execution: Execution,
-        middleware: PreparedMiddleware,
+        execution: _Execution,
+        middleware: _PreparedMiddleware,
         run_inner: Callable[[], ExecutionPlan[Any]],
     ) -> ExecutionPlan[Any]:
         return (
@@ -605,35 +590,32 @@ class OperationEngineImpl(OperationEngine):
                     plan_effect=self._make_plan_effect(
                         execution=execution,
                         allowed_effect_types=self._ANY_EFFECT_TYPES,
-                        generate_effect_id=EffectIdGenerator(execution.seed + middleware.seed),
+                        generate_effect_id=_EffectIdGenerator(execution.seed + middleware.seed),
                     ),
                     run_inner=run_inner,
                 ),
             )
         )
 
-    @classmethod
+    @staticmethod
     def _plan_middleware_effect(
-        cls,
         effect: Effect[Any],
-        plan_effect: PlanEffect,
+        plan_effect: _PlanEffect,
         run_inner: Callable[[], ExecutionPlan[Any]],
     ) -> Iterable[Instruction[Any]]:
         if isinstance(effect, Proceed):
             return run_inner()
         return plan_effect(effect)
 
-    @classmethod
-    def _run[ResultT](
-        cls, effectful: Effectful[ResultT, Effect[Any]], plan_effect: PlanEffect
-    ) -> ExecutionPlan[ResultT]:
+    @staticmethod
+    def _run[ResultT](effectful: Effectful[ResultT, Effect[Any]], plan_effect: _PlanEffect) -> ExecutionPlan[ResultT]:
         try:
             effect = effectful.send(None)
             while True:
                 effect_plan = plan_effect(effect)
                 try:
                     effect_result = yield from effect_plan
-                except EngineError:
+                except _EngineError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - the handler decides how to handle the error
                     effect = effectful.throw(exc)
@@ -646,11 +628,11 @@ class OperationEngineImpl(OperationEngine):
 
     def _make_plan_effect(
         self,
-        execution: Execution,
+        execution: _Execution,
         allowed_effect_types: tuple[type[Effect[Any]], ...],
         generate_effect_id: Callable[[], EffectId],
-        events: EventBuffer | None = None,
-    ) -> PlanEffect:
+        events: _EventBuffer | None = None,
+    ) -> _PlanEffect:
         """`events` is where the published events go, `None` forbids publishing."""
         return partial(
             self._make_instruction,
@@ -665,8 +647,8 @@ class OperationEngineImpl(OperationEngine):
         effect: Effect[Any],
         allowed_effect_types: tuple[type[Effect[Any]], ...],
         generate_effect_id: Callable[[], EffectId],
-        execution: Execution,
-        events: EventBuffer | None,
+        execution: _Execution,
+        events: _EventBuffer | None,
     ) -> Iterable[Instruction[Any]]:
         if isinstance(effect, Event) and events is not None:
             self._publish(
@@ -678,7 +660,7 @@ class OperationEngineImpl(OperationEngine):
             # A buffered event needs no instruction, so the effectful gets `None` at once.
             return ()
         if not isinstance(effect, allowed_effect_types):
-            raise EngineError(UnsupportedEffectError(effect))
+            raise _EngineError(UnsupportedEffectError(effect))
         if isinstance(effect, self._HANDLED_EFFECT_TYPES):
             return CallEffectHandlerInstruction(
                 message_context=execution.message_context,
@@ -699,18 +681,18 @@ class OperationEngineImpl(OperationEngine):
                 transaction=effect.transaction,
                 plan=self._run_transaction(effect, plan_effect),
             )
-        raise EngineError(UnsupportedEffectError(effect))
+        raise _EngineError(UnsupportedEffectError(effect))
 
     def _publish(
         self,
         event: Event,
-        execution: Execution,
+        execution: _Execution,
         generate_effect_id: Callable[[], EffectId],
-        events: EventBuffer,
+        events: _EventBuffer,
     ) -> None:
         prepared_event = self._type_to_event.get(type(event))
         if prepared_event is None:
-            raise EngineError(EventNotDefinedError(type(event)))
+            raise _EngineError(EventNotDefinedError(type(event)))
         event_def = prepared_event.event_def
         event_id = generate_effect_id()
         if event_def.handler_defs:
@@ -729,7 +711,7 @@ class OperationEngineImpl(OperationEngine):
     def _run_transaction(
         cls,
         effect: ReadTransactionEffect[Any] | WriteTransactionEffect[Any, Any],
-        plan_effect: PlanEffect,
+        plan_effect: _PlanEffect,
     ) -> ExecutionPlan[Any]:
         # Called in the plan so that an error of the call reaches the handler like other errors of the transaction.
         effectful = effect.transaction.function(*effect.args, **effect.kwargs)

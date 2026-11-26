@@ -18,11 +18,11 @@ __all__ = [
 ]
 
 
-class PydanticCodec[T](Codec[T]):
+class _PydanticCodec[T](Codec[T]):
     # Not only `PydanticSerializationError`, because a circular reference or bytes that are not UTF-8 fail with a bare `ValueError`.
     SERIALIZATION_ERRORS: ClassVar[type[ValueError]] = ValueError
 
-    def __init__(self, adapter: TypeAdapter[T], strict: bool) -> None:
+    def __init__(self, adapter: TypeAdapter[T], *, strict: bool) -> None:
         self._adapter: TypeAdapter[T] = adapter
         self._strict: bool = strict
         self._json_schema: JsonSchema = adapter.json_schema()
@@ -79,6 +79,6 @@ class PydanticSerializer(Serializer):
     @override
     def _make_codec(self, type_: object) -> Codec[Any]:
         try:
-            return PydanticCodec(adapter=TypeAdapter[Any](cast(type[Any], type_)), strict=self._strict)
+            return _PydanticCodec(adapter=TypeAdapter[Any](cast(type[Any], type_)), strict=self._strict)
         except PydanticUserError as e:
             raise UnsupportedTypeError(type_) from e
