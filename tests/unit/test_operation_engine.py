@@ -6,11 +6,7 @@ from unittest.mock import ANY
 import pytest
 
 from fidem.di.core import DependencyNotFoundError, UnsupportedFunctionError
-from fidem.effects import (
-    Effect,
-    EffectContext,
-    Effectful,
-)
+from fidem.effects import Effect, EffectContext, Effectful
 from fidem.guards import GuardDef
 from fidem.messages import (
     AtomicEffectful,
@@ -23,33 +19,37 @@ from fidem.messages import (
     StagedEffectful,
     StagedHandler,
 )
-from fidem.operation_engine import (
+from fidem.operation_engine.definitions import (
     AtomicCommandDef,
     AtomicEventHandlerDef,
-    CallEffectHandlerInstruction,
+    EventDef,
+    ExecutionMode,
+    MessageMiddlewareDef,
+    MessageMiddlewareEffectful,
+    Proceed,
+    QueryDef,
+    StagedCommandDef,
+    StagedEventHandlerDef,
+)
+from fidem.operation_engine.engine import OperationEngineImpl
+from fidem.operation_engine.errors import (
     CommandNotDefinedError,
     DuplicateCommandDefError,
     DuplicateEventDefError,
     DuplicateEventHandlerDefError,
     DuplicateMessageMiddlewareDefError,
     DuplicateQueryDefError,
-    EventDef,
     EventNotDefinedError,
-    ExecutionMode,
+    QueryNotDefinedError,
+    UnsupportedAtomicResultError,
+    UnsupportedEffectError,
+)
+from fidem.operation_engine.instructions import (
+    CallEffectHandlerInstruction,
     ExecutionPlan,
     HandledEffect,
     Instruction,
-    MessageMiddlewareDef,
-    MessageMiddlewareEffectful,
-    OperationEngineImpl,
-    Proceed,
-    QueryDef,
-    QueryNotDefinedError,
     RunTransactionInstruction,
-    StagedCommandDef,
-    StagedEventHandlerDef,
-    UnsupportedAtomicResultError,
-    UnsupportedEffectError,
 )
 from fidem.outbox import OutboxEvent, WriteOutboxEffect
 from fidem.testing import YieldStep, assert_generator

@@ -1,7 +1,5 @@
-from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Iterable, Mapping, MutableSequence, Sequence
 from dataclasses import dataclass
-from enum import Enum, auto
 from functools import partial
 from random import Random
 from typing import Any, Final
@@ -9,7 +7,6 @@ from typing import Any, Final
 from fidem._validation import check_unique
 from fidem.di.core import DependencyKey, make_message_dependencies
 from fidem.effects import (
-    ControlEffect,
     DatabaseEffect,
     DatabaseReadEffect,
     Effect,
@@ -20,248 +17,51 @@ from fidem.effects import (
     ExternalWriteEffect,
     InternalEffect,
 )
-from fidem.errors import Error
 from fidem.guards import GuardContainer, GuardDef, GuardedFunction, GuardResolutionStep, GuardValues
-from fidem.messages import (
-    QUERY_EFFECT_TYPES,
-    AtomicHandler,
-    Command,
-    Event,
-    EventHandlerName,
-    EventVersion,
-    Message,
-    MessageContext,
-    MessageName,
-    Query,
-    QueryHandler,
-    StagedHandler,
+from fidem.messages import QUERY_EFFECT_TYPES, Command, Event, Message, MessageContext, Query
+from fidem.operation_engine.definitions import (
+    AnyEventHandlerDef,
+    AtomicCommandDef,
+    AtomicEventHandlerDef,
+    CommandDef,
+    EventDef,
+    ExecutionMode,
+    MessageMiddlewareDef,
+    Proceed,
+    QueryDef,
+    StagedCommandDef,
+    StagedEventHandlerDef,
+)
+from fidem.operation_engine.errors import (
+    CommandNotDefinedError,
+    DuplicateCommandDefError,
+    DuplicateEventDefError,
+    DuplicateEventHandlerDefError,
+    DuplicateMessageMiddlewareDefError,
+    DuplicateQueryDefError,
+    EventNotDefinedError,
+    QueryNotDefinedError,
+    UnsupportedAtomicResultError,
+    UnsupportedEffectError,
+)
+from fidem.operation_engine.instructions import (
+    CallEffectHandlerInstruction,
+    ExecutionPlan,
+    Instruction,
+    OperationEngine,
+    RunTransactionInstruction,
 )
 from fidem.outbox import OutboxEvent, WriteOutboxEffect
 from fidem.transactions import (
     IMPLICIT_READ_TRANSACTION,
     IMPLICIT_WRITE_TRANSACTION,
-    AnyTransaction,
     ReadTransactionEffect,
     WriteTransactionEffect,
 )
 
 __all__ = [
-    "AnyEventHandlerDef",
-    "AtomicCommandDef",
-    "AtomicEventHandlerDef",
-    "CallEffectHandlerInstruction",
-    "CommandDef",
-    "CommandNotDefinedError",
-    "DuplicateCommandDefError",
-    "DuplicateEventDefError",
-    "DuplicateEventHandlerDefError",
-    "DuplicateMessageMiddlewareDefError",
-    "DuplicateQueryDefError",
-    "EventDef",
-    "EventHandlerDef",
-    "EventNotDefinedError",
-    "ExecutionMode",
-    "ExecutionPlan",
-    "HandledEffect",
-    "Instruction",
-    "MessageDef",
-    "MessageMiddleware",
-    "MessageMiddlewareDef",
-    "MessageMiddlewareEffect",
-    "MessageMiddlewareEffectful",
-    "MiddlewareName",
-    "OperationEngine",
     "OperationEngineImpl",
-    "Proceed",
-    "QueryDef",
-    "QueryNotDefinedError",
-    "RunTransactionInstruction",
-    "StagedCommandDef",
-    "StagedEventHandlerDef",
-    "UnsupportedAtomicResultError",
-    "UnsupportedEffectError",
 ]
-
-
-class ExecutionMode(Enum):
-    EPHEMERAL = auto()
-    DURABLE = auto()
-
-
-@dataclass(frozen=True, slots=True)
-class Proceed(ControlEffect[Any]):
-    """Runs the inner part of the middleware chain and returns its result."""
-
-
-type MessageMiddlewareEffect = HandledEffect[Any] | ReadTransactionEffect[Any] | WriteTransactionEffect[Any] | Proceed
-"""Effects a message middleware may yield, its write transactions publish no events."""
-type MessageMiddlewareEffectful[ResultT] = Effectful[ResultT, MessageMiddlewareEffect]
-"""The generator of a message middleware."""
-type MessageMiddleware = Callable[..., MessageMiddlewareEffectful[object]]
-type MiddlewareName = str
-
-
-@dataclass(frozen=True, slots=True)
-class MessageMiddlewareDef:
-    name: MiddlewareName
-    """A stable name the effect ids of the middleware depend on."""
-    middleware: MessageMiddleware
-
-
-@dataclass(frozen=True, slots=True)
-class MessageDef[MessageT: Message[Any], MessageHandlerT: Callable[..., Effectful[Any, Any]]]:
-    name: MessageName
-    message_type: type[MessageT]
-    handler: MessageHandlerT
-    middleware_defs: Sequence[MessageMiddlewareDef] | None = None
-    """Replace the engine middlewares, `None` keeps them."""
-
-
-@dataclass(frozen=True, slots=True)
-class AtomicCommandDef[ResultT](MessageDef[Command[ResultT], AtomicHandler[ResultT, Event]]):
-    execution_mode: ExecutionMode = ExecutionMode.EPHEMERAL
-
-
-@dataclass(frozen=True, slots=True)
-class StagedCommandDef[ResultT](MessageDef[Command[ResultT], StagedHandler[ResultT, Event]]):
-    execution_mode: ExecutionMode = ExecutionMode.EPHEMERAL
-
-
-type CommandDef[ResultT] = StagedCommandDef[ResultT] | AtomicCommandDef[ResultT]
-
-
-@dataclass(frozen=True, slots=True)
-class QueryDef[ResultT](MessageDef[Query[ResultT], QueryHandler[ResultT]]):
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class EventHandlerDef[EventHandlerT: Callable[..., Effectful[Any, Any]]]:
-    name: EventHandlerName
-    """A stable name unique among the handlers of the event, the message id of its operation depends on it."""
-    handler: EventHandlerT
-    middleware_defs: Sequence[MessageMiddlewareDef] | None = None
-    """Replace the engine middlewares, `None` keeps them."""
-    execution_mode: ExecutionMode = ExecutionMode.EPHEMERAL
-
-
-@dataclass(frozen=True, slots=True)
-class AtomicEventHandlerDef(EventHandlerDef[AtomicHandler[None, Event]]):
-    pass
-
-
-@dataclass(frozen=True, slots=True)
-class StagedEventHandlerDef(EventHandlerDef[StagedHandler[None, Event]]):
-    pass
-
-
-type AnyEventHandlerDef = AtomicEventHandlerDef | StagedEventHandlerDef
-
-
-@dataclass(frozen=True, slots=True)
-class EventDef[EventT: Event]:
-    name: MessageName
-    event_type: type[EventT]
-    version: EventVersion = 1
-    handler_defs: Sequence[AnyEventHandlerDef] = ()
-
-
-type HandledEffect[ResultT] = InternalEffect[ResultT] | ExternalEffect[ResultT] | DatabaseEffect[ResultT]
-
-
-class Instruction[ResultT](Effect[ResultT]):
-    pass
-
-
-type ExecutionPlan[ResultT] = Effectful[ResultT, Instruction[Any]]
-
-
-@dataclass(frozen=True, slots=True)
-class CallEffectHandlerInstruction[ResultT](Instruction[ResultT]):
-    message_context: MessageContext
-    message: Message[Any]
-    effect_context: EffectContext
-    effect: HandledEffect[ResultT]
-
-
-@dataclass(frozen=True, slots=True)
-class RunTransactionInstruction[ResultT](Instruction[ResultT]):
-    """Runs the plan in one database transaction and returns its result."""
-
-    transaction: AnyTransaction
-    plan: ExecutionPlan[ResultT]
-
-
-class OperationEngine(ABC):
-    @abstractmethod
-    def execute[ResultT](
-        self,
-        command: Command[ResultT],
-        message_context: MessageContext,
-    ) -> ExecutionPlan[ResultT]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def query[ResultT](
-        self,
-        query: Query[ResultT],
-        message_context: MessageContext,
-    ) -> ExecutionPlan[ResultT]:
-        raise NotImplementedError
-
-
-class DuplicateCommandDefError(Error):
-    def __init__(self, command_defs: Collection[CommandDef[Any]]) -> None:
-        super().__init__(command_defs)
-
-
-class DuplicateQueryDefError(Error):
-    def __init__(self, query_defs: Collection[QueryDef[Any]]) -> None:
-        super().__init__(query_defs)
-
-
-class DuplicateEventDefError(Error):
-    """Events have the same type or the same name."""
-
-    def __init__(self, event_defs: Collection[EventDef[Any]]) -> None:
-        super().__init__(event_defs)
-
-
-class DuplicateEventHandlerDefError(Error):
-    def __init__(self, handler_defs: Collection[AnyEventHandlerDef]) -> None:
-        super().__init__(handler_defs)
-
-
-class DuplicateMessageMiddlewareDefError(Error):
-    def __init__(self, middleware_defs: Collection[MessageMiddlewareDef]) -> None:
-        super().__init__(middleware_defs)
-
-
-class CommandNotDefinedError(Error):
-    def __init__(self, command_type: type[Command[Any]]) -> None:
-        super().__init__(command_type)
-
-
-class QueryNotDefinedError(Error):
-    def __init__(self, query_type: type[Query[Any]]) -> None:
-        super().__init__(query_type)
-
-
-class EventNotDefinedError(Error):
-    def __init__(self, event_type: type[Event]) -> None:
-        super().__init__(event_type)
-
-
-class UnsupportedEffectError(Error):
-    def __init__(self, effect: Effect[Any]) -> None:
-        super().__init__(effect)
-
-
-class UnsupportedAtomicResultError(Error):
-    """An atomic handler returned neither a write transaction effect nor an external write effect."""
-
-    def __init__(self, result: object) -> None:
-        super().__init__(result)
 
 
 class _EngineError(Exception):
