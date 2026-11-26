@@ -7,11 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from fidem.di.core import DependencyNotFoundError, UnsupportedFunctionError
-from fidem.di.effects import (
-    EffectDependencyDef,
-    EffectDependencyLifetime,
-    ScopeClosedError,
-)
+from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime, ScopeClosedError
 from fidem.effects import Effect, EffectContext, Effectful, InternalEffect
 from fidem.environment import (
     CallNext,
@@ -26,23 +22,18 @@ from fidem.environment import (
 )
 from fidem.guards import GuardDef
 from fidem.messages import AtomicEffectful, Command, MessageContext, QueryEffect, StagedEffectful
-from fidem.operation_engine import (
-    AtomicCommandDef,
+from fidem.operation_engine.definitions import AtomicCommandDef, StagedCommandDef
+from fidem.operation_engine.engine import OperationEngineImpl
+from fidem.operation_engine.instructions import (
     CallEffectHandlerInstruction,
     ExecutionPlan,
     HandledEffect,
     Instruction,
     OperationEngine,
-    OperationEngineImpl,
     RunTransactionInstruction,
-    StagedCommandDef,
 )
 from fidem.testing import YieldStep
-from fidem.transactions import (
-    TransactionContext,
-    WriteTransaction,
-    WriteTransactionEffectful,
-)
+from fidem.transactions import TransactionContext, WriteTransaction, WriteTransactionEffectful
 from tests.effects import TestDatabaseReadEffect, TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
 from tests.messages import TestCommand, TestQuery
 from tests.stubs import GeneratorFunctionStub

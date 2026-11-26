@@ -351,23 +351,26 @@ async with environment:
 
 ✅ **Ошибки** fidem наследуют `fidem.Error`, поэтому любую ошибку фреймворка можно поймать одним `except`. `ValueError` и `TypeError` из fidem означают ошибку в самом fidem.
 
-| Модуль                   | Содержимое                                                                                      |
-| ------------------------ | ----------------------------------------------------------------------------------------------- |
-| `fidem.errors`           | Корневая ошибка `Error`                                                                         |
-| `fidem.effects`          | Эффекты и их категории, `EffectContext`                                                         |
-| `fidem.messages`         | Сообщения, `MessageContext`, типы обработчиков сообщений, `QueryEffect`                         |
-| `fidem.transactions`     | Читающие и пишущие транзакции, их эффекты, `TransactionContext`                                 |
-| `fidem.operation_engine` | Объявления команд, запросов и событий, режимы, инструкции, мидлвари сообщений, движок           |
-| `fidem.environment`      | Объявления эффектов, мидлвари эффектов, Environment                                             |
-| `fidem.di.core`          | Общее для DI и гардов: ключи, разбор сигнатур, сопоставление параметров, проверка графа, ошибки |
-| `fidem.di.effects`       | DI обработчиков эффектов                                                                        |
-| `fidem.guards`           | Гарды                                                                                           |
-| `fidem.testing`          | Помощники для тестирования генераторов                                                          |
-| `fidem.outbox`           | Эффект записи [событий](#события) в outbox и его строки                                         |
-| `fidem.serialization`    | Интерфейс [сериализации](#сериализация), `JsonValue`, ошибки                                    |
-| `fidem.pydantic`         | Сериализатор на pydantic                                                                        |
-| `fidem.msgspec`          | Сериализатор на msgspec                                                                         |
-| `fidem.asyncpg`          | Соединение [asyncpg](#asyncpg) в транзакции, [миграции](#миграции), запись в outbox             |
+| Модуль                                | Содержимое                                                                                      |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `fidem.errors`                        | Корневая ошибка `Error`                                                                         |
+| `fidem.effects`                       | Эффекты и их категории, `EffectContext`                                                         |
+| `fidem.messages`                      | Сообщения, `MessageContext`, типы обработчиков сообщений, `QueryEffect`                         |
+| `fidem.transactions`                  | Читающие и пишущие транзакции, их эффекты, `TransactionContext`                                 |
+| `fidem.operation_engine.definitions`  | Объявления команд, запросов и событий, режимы, мидлвари сообщений                               |
+| `fidem.operation_engine.instructions` | Инструкции, план выполнения и интерфейс движка                                                  |
+| `fidem.operation_engine.errors`       | Ошибки объявлений и выполнения сообщений                                                        |
+| `fidem.operation_engine.engine`       | Движок                                                                                          |
+| `fidem.environment`                   | Объявления эффектов, мидлвари эффектов, Environment                                             |
+| `fidem.di.core`                       | Общее для DI и гардов: ключи, разбор сигнатур, сопоставление параметров, проверка графа, ошибки |
+| `fidem.di.effects`                    | DI обработчиков эффектов                                                                        |
+| `fidem.guards`                        | Гарды                                                                                           |
+| `fidem.testing`                       | Помощники для тестирования генераторов                                                          |
+| `fidem.outbox`                        | Эффект записи [событий](#события) в outbox и его строки                                         |
+| `fidem.serialization`                 | Интерфейс [сериализации](#сериализация), `JsonValue`, ошибки                                    |
+| `fidem.pydantic`                      | Сериализатор на pydantic                                                                        |
+| `fidem.msgspec`                       | Сериализатор на msgspec                                                                         |
+| `fidem.asyncpg`                       | Соединение [asyncpg](#asyncpg) в транзакции, [миграции](#миграции), запись в outbox             |
 
 ## Что ещё можно построить на знании о приложении
 

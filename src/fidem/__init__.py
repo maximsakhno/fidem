@@ -73,37 +73,43 @@ from fidem.messages import (
     StagedEffectful,
     StagedHandler,
 )
-from fidem.operation_engine import (
+from fidem.operation_engine.definitions import (
     AnyEventHandlerDef,
     AtomicCommandDef,
     AtomicEventHandlerDef,
     CommandDef,
-    CommandNotDefinedError,
-    DuplicateCommandDefError,
-    DuplicateEventDefError,
-    DuplicateEventHandlerDefError,
-    DuplicateMessageMiddlewareDefError,
-    DuplicateQueryDefError,
     EventDef,
     EventHandlerDef,
-    EventNotDefinedError,
     ExecutionMode,
-    HandledEffect,
     MessageDef,
     MessageMiddleware,
     MessageMiddlewareDef,
     MessageMiddlewareEffect,
     MessageMiddlewareEffectful,
     MiddlewareName,
-    OperationEngine,
-    OperationEngineImpl,
     Proceed,
     QueryDef,
-    QueryNotDefinedError,
     StagedCommandDef,
     StagedEventHandlerDef,
+)
+from fidem.operation_engine.engine import (
+    OperationEngineImpl,
+)
+from fidem.operation_engine.errors import (
+    CommandNotDefinedError,
+    DuplicateCommandDefError,
+    DuplicateEventDefError,
+    DuplicateEventHandlerDefError,
+    DuplicateMessageMiddlewareDefError,
+    DuplicateQueryDefError,
+    EventNotDefinedError,
+    QueryNotDefinedError,
     UnsupportedAtomicResultError,
     UnsupportedEffectError,
+)
+from fidem.operation_engine.instructions import (
+    HandledEffect,
+    OperationEngine,
 )
 from fidem.serialization import (
     Codec,

@@ -10,17 +10,11 @@ from uuid import uuid4
 
 from fidem._validation import check_unique
 from fidem.di.core import UnsupportedFunctionError
-from fidem.di.effects import (
-    EffectDependencyContainer,
-    EffectDependencyDef,
-    PreparedEffectHandler,
-    Scope,
-    Scopes,
-)
+from fidem.di.effects import EffectDependencyContainer, EffectDependencyDef, PreparedEffectHandler, Scope, Scopes
 from fidem.effects import DatabaseEffect, Effect, EffectContext
 from fidem.errors import Error
 from fidem.messages import Command, Message, MessageContext, MessageId, Query
-from fidem.operation_engine import (
+from fidem.operation_engine.instructions import (
     CallEffectHandlerInstruction,
     ExecutionPlan,
     Instruction,

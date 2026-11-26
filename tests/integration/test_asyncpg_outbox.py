@@ -12,14 +12,14 @@ from fidem.di.effects import EffectDependencyDef
 from fidem.effects import DatabaseWriteEffect
 from fidem.environment import EffectDef, EnvironmentImpl
 from fidem.messages import AtomicEffectful, Event, StagedEffectful
-from fidem.operation_engine import (
+from fidem.operation_engine.definitions import (
     AtomicCommandDef,
     CommandDef,
     EventDef,
-    OperationEngineImpl,
     StagedCommandDef,
     StagedEventHandlerDef,
 )
+from fidem.operation_engine.engine import OperationEngineImpl
 from fidem.pydantic import PydanticSerializer
 from fidem.serialization import Serializer
 from fidem.transactions import WriteTransaction, WriteTransactionEffectful

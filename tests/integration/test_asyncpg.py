@@ -12,7 +12,8 @@ from fidem.di.effects import EffectDependencyDef
 from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, Effectful
 from fidem.environment import EffectDef, EnvironmentImpl
 from fidem.messages import AtomicEffectful, QueryEffectful
-from fidem.operation_engine import AtomicCommandDef, CommandDef, OperationEngineImpl, QueryDef, StagedCommandDef
+from fidem.operation_engine.definitions import AtomicCommandDef, CommandDef, QueryDef, StagedCommandDef
+from fidem.operation_engine.engine import OperationEngineImpl
 from fidem.transactions import ReadTransaction, ReadTransactionEffectful, WriteTransaction, WriteTransactionEffectful
 from tests.messages import TestCommand, TestQuery
 
