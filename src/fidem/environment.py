@@ -17,7 +17,8 @@ from fidem.di.effects import (
     Scope,
     Scopes,
 )
-from fidem.effects import DatabaseEffect, Effect, EffectContext, ReadEffect
+from fidem.effects import DatabaseEffect, Effect, EffectContext
+from fidem.errors import Error
 from fidem.messages import Command, Message, MessageContext, MessageId, Query
 from fidem.operation_engine import (
     CallEffectHandlerInstruction,
@@ -86,21 +87,21 @@ class Environment(AbstractAsyncContextManager["Environment", None], ABC):
         raise NotImplementedError
 
 
-class DuplicateEffectDefError(Exception):
+class DuplicateEffectDefError(Error):
     def __init__(self, effect_defs: Collection[EffectDef[Any]]) -> None:
         super().__init__(effect_defs)
 
 
-class EffectNotDefinedError(Exception):
+class EffectNotDefinedError(Error):
     def __init__(self, effect_type: type[Effect[Any]]) -> None:
         super().__init__(effect_type)
 
 
-class EnvironmentNotStartedError(Exception):
+class EnvironmentNotStartedError(Error):
     pass
 
 
-class EnvironmentAlreadyStartedError(Exception):
+class EnvironmentAlreadyStartedError(Error):
     pass
 
 
@@ -108,19 +109,9 @@ class EnvironmentAlreadyStartedError(Exception):
 class _PreparedEffect:
     handler: PreparedEffectHandler
     middlewares: Sequence[EffectMiddleware]
-    implicit_transaction_context: TransactionContext | None
-    """The context of the transaction the effect runs in outside a transaction, `None` for no transaction."""
 
 
 class EnvironmentImpl(Environment):
-    _IMPLICIT_WRITE_TRANSACTION_CONTEXT: ClassVar[TransactionContext] = TransactionContext(
-        read_only=False,
-        transaction=None,
-    )
-    _IMPLICIT_READ_TRANSACTION_CONTEXT: ClassVar[TransactionContext] = TransactionContext(
-        read_only=True,
-        transaction=None,
-    )
     _NO_TRANSACTION_SCOPE: ClassVar[Scope] = Scope({})
 
     def __init__(
@@ -158,24 +149,14 @@ class EnvironmentImpl(Environment):
         for middleware_def in middleware_defs:
             if not iscoroutinefunction(middleware_def.middleware):
                 raise UnsupportedFunctionError(middleware_def.middleware)
-        implicit_transaction_context = self._get_implicit_transaction_context(effect_def.effect_type)
         return _PreparedEffect(
             handler=self._dependency_container.prepare_effect_handler(
                 effect_type=effect_def.effect_type,
                 handler=effect_def.handler,
-                in_transaction=implicit_transaction_context is not None,
+                in_transaction=issubclass(effect_def.effect_type, DatabaseEffect),
             ),
             middlewares=tuple(middleware_def.middleware for middleware_def in middleware_defs),
-            implicit_transaction_context=implicit_transaction_context,
         )
-
-    @classmethod
-    def _get_implicit_transaction_context(cls, effect_type: type[Effect[Any]]) -> TransactionContext | None:
-        if not issubclass(effect_type, DatabaseEffect):
-            return None
-        if issubclass(effect_type, ReadEffect):
-            return cls._IMPLICIT_READ_TRANSACTION_CONTEXT
-        return cls._IMPLICIT_WRITE_TRANSACTION_CONTEXT
 
     async def __aenter__(self) -> Self:
         if self._application_scope is not None:
@@ -303,10 +284,7 @@ class EnvironmentImpl(Environment):
         plan: ExecutionPlan[Any],
         scopes: Scopes,
     ) -> object:
-        transaction_context = TransactionContext(
-            read_only=transaction.read_only,
-            transaction=transaction,
-        )
+        transaction_context = TransactionContext(transaction=transaction)
         async with self._dependency_container.make_transaction_scope(transaction_context) as transaction_scope:
             return await self._run_execution_plan(plan, scopes, transaction_scope)
 
@@ -317,32 +295,12 @@ class EnvironmentImpl(Environment):
         scopes: Scopes,
         transaction_scope: Scope | None,
     ) -> object:
-        transaction_context = prepared_effect.implicit_transaction_context
-        if transaction_scope is not None or transaction_context is None:
-            return await self._call_in_effect_scope(
-                effect_handler=prepared_effect.handler,
-                effect_call=effect_call,
-                scopes=scopes,
-                transaction_scope=self._NO_TRANSACTION_SCOPE if transaction_scope is None else transaction_scope,
-            )
-        # Opened here and not by the engine so that each retry of the effect gets a new transaction.
-        async with self._dependency_container.make_transaction_scope(transaction_context) as effect_transaction_scope:
-            return await self._call_in_effect_scope(
-                effect_handler=prepared_effect.handler,
-                effect_call=effect_call,
-                scopes=scopes,
-                transaction_scope=effect_transaction_scope,
-            )
-
-    async def _call_in_effect_scope(
-        self,
-        effect_handler: PreparedEffectHandler,
-        effect_call: EffectCall,
-        scopes: Scopes,
-        transaction_scope: Scope,
-    ) -> object:
         effect_scope = self._dependency_container.make_effect_scope(effect_call.effect, effect_call.effect_context)
         async with effect_scope:
-            effect_scopes = (*scopes, transaction_scope, effect_scope)
-            await effect_handler.resolve(effect_scopes)
-            return await effect_handler.call(effect_scopes)
+            effect_scopes = (
+                *scopes,
+                self._NO_TRANSACTION_SCOPE if transaction_scope is None else transaction_scope,
+                effect_scope,
+            )
+            await prepared_effect.handler.resolve(effect_scopes)
+            return await prepared_effect.handler.call(effect_scopes)

@@ -4,14 +4,14 @@ from typing import Any
 
 __all__ = [
     "RaiseStep",
-    "YeildStep",
+    "YieldStep",
     "assert_generator",
 ]
 
 
 @dataclass(frozen=True, slots=True)
-class YeildStep:
-    yeild_value: Any
+class YieldStep:
+    yield_value: Any
     send_value: Any
 
 
@@ -22,7 +22,7 @@ class RaiseStep:
 
 def assert_generator(
     generator: Generator[Any, Any, Any],
-    steps: Sequence[YeildStep | RaiseStep] = (),
+    steps: Sequence[YieldStep | RaiseStep] = (),
     return_value: Any | None = None,
 ) -> None:
     send_value: Any | None = None
@@ -36,7 +36,7 @@ def assert_generator(
             else:
                 raise AssertionError(f"Expected {type(step.exception)} to be raised")
         else:
-            assert generator.send(send_value) == step.yeild_value
+            assert generator.send(send_value) == step.yield_value
             send_value = step.send_value
 
     try:

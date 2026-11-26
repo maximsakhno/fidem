@@ -38,6 +38,7 @@ from fidem.operation_engine import (
     ExecutionMode,
     ExecutionPlan,
     HandledEffect,
+    Instruction,
     MessageMiddlewareDef,
     MessageMiddlewareEffectful,
     OperationEngineImpl,
@@ -51,8 +52,16 @@ from fidem.operation_engine import (
     UnsupportedEffectError,
 )
 from fidem.outbox import OutboxEvent, WriteOutboxEffect
-from fidem.testing import YeildStep, assert_generator
-from fidem.transactions import ReadTransaction, ReadTransactionEffectful, WriteTransaction, WriteTransactionEffectful
+from fidem.testing import YieldStep, assert_generator
+from fidem.transactions import (
+    IMPLICIT_READ_TRANSACTION,
+    IMPLICIT_WRITE_TRANSACTION,
+    AnyTransaction,
+    ReadTransaction,
+    ReadTransactionEffectful,
+    WriteTransaction,
+    WriteTransactionEffectful,
+)
 from tests.effects import (
     TestControlEffect,
     TestDatabaseReadEffect,
@@ -103,7 +112,7 @@ class TestExecuteEphemeral:
 
     @pytest.mark.parametrize(
         argnames="effect",
-        argvalues=[TestInternalEffect(), TestExternalReadEffect(), TestDatabaseWriteEffect()],
+        argvalues=[TestInternalEffect(), TestExternalReadEffect(), TestExternalWriteEffect()],
     )
     def test_yields_call_effect_handler_instruction_when_handler_yields_effect(
         self,
@@ -118,7 +127,7 @@ class TestExecuteEphemeral:
 
         assert_generator(
             generator=engine.execute(command, MessageContext(message_id="test_message_id")),
-            steps=[YeildStep(make_expected_instruction(effect, command), "effect_result")],
+            steps=[YieldStep(make_expected_instruction(effect, command), "effect_result")],
             return_value="command_result effect_result",
         )
 
@@ -260,13 +269,18 @@ class TestExecuteAtomic:
         command = TestCommand()
         execution_plan = make_engine(handler, command_def_type=AtomicCommandDef).execute(command, MESSAGE_CONTEXT)
 
-        assert execution_plan.send(None) == make_expected_instruction(read, command)
+        assert_runs_in_transaction(
+            instruction=execution_plan.send(None),
+            transaction=IMPLICIT_READ_TRANSACTION,
+            effect_instruction=make_expected_instruction(read, command),
+            result="read_result",
+        )
         instruction = execution_plan.send("read_result")
         assert isinstance(instruction, RunTransactionInstruction)
         assert instruction.transaction is transaction
         assert_generator(
             generator=instruction.plan,
-            steps=[YeildStep(make_expected_instruction(write, command), "write_result")],
+            steps=[YieldStep(make_expected_instruction(write, command), "write_result")],
             return_value="read_result write_result",
         )
         with pytest.raises(StopIteration) as exc_info:
@@ -285,8 +299,8 @@ class TestExecuteAtomic:
         assert_generator(
             generator=make_engine(handler, command_def_type=AtomicCommandDef).execute(command, MESSAGE_CONTEXT),
             steps=[
-                YeildStep(make_expected_instruction(read, command), "read_result"),
-                YeildStep(make_expected_instruction(write, command), "write_result"),
+                YieldStep(make_expected_instruction(read, command), "read_result"),
+                YieldStep(make_expected_instruction(write, command), "write_result"),
             ],
             return_value="write_result",
         )
@@ -557,8 +571,8 @@ class TestGuards:
         assert_generator(
             generator=engine.execute(command, MessageContext(message_id="test_message_id")),
             steps=[
-                YeildStep(make_expected_instruction(internal_effect, command), "internal_result"),
-                YeildStep(make_expected_instruction(external_effect, command), "external_result"),
+                YieldStep(make_expected_instruction(internal_effect, command), "internal_result"),
+                YieldStep(make_expected_instruction(external_effect, command), "external_result"),
             ],
             return_value="Service OtherService",
         )
@@ -749,13 +763,13 @@ class TestMessageMiddlewares:
             yield from ()
             return "command_result"
 
-        effect = TestDatabaseWriteEffect()
+        effect = TestExternalWriteEffect()
         command = TestCommand()
         engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
 
         assert_generator(
             generator=engine.execute(command, MessageContext(message_id="test_message_id")),
-            steps=[YeildStep(make_expected_instruction(effect, command), "effect_result")],
+            steps=[YieldStep(make_expected_instruction(effect, command), "effect_result")],
             return_value="command_result",
         )
 
@@ -1047,13 +1061,13 @@ class TestExecuteQuery:
             return f"query_result {effect_result}"
 
         calls: MutableSequence[tuple[MessageContext, TestQuery, Service]] = []
-        read = TestDatabaseReadEffect()
+        read = TestExternalReadEffect()
         query = TestQuery()
         engine = make_query_engine(handler, guard_defs=[GuardDef(service)])
 
         assert_generator(
             generator=engine.query(query, MESSAGE_CONTEXT),
-            steps=[YeildStep(make_expected_instruction(read, query), "effect_result")],
+            steps=[YieldStep(make_expected_instruction(read, query), "effect_result")],
             return_value="query_result effect_result",
         )
         assert len(calls) == 1
@@ -1157,6 +1171,35 @@ class TestExecuteQuery:
 
 
 class TestTransactions:
+    @pytest.mark.parametrize(
+        argnames=("effect", "transaction"),
+        argvalues=[
+            (TestDatabaseReadEffect(), IMPLICIT_READ_TRANSACTION),
+            (TestDatabaseWriteEffect(), IMPLICIT_WRITE_TRANSACTION),
+        ],
+    )
+    def test_runs_database_effect_outside_transaction_in_implicit_transaction(
+        self,
+        effect: HandledEffect[str],
+        transaction: AnyTransaction,
+    ) -> None:
+        def handler() -> Effectful[str, Effect[Any]]:
+            effect_result = yield from effect
+            return f"command_result {effect_result}"
+
+        command = TestCommand()
+        execution_plan = make_engine(handler).execute(command, MESSAGE_CONTEXT)
+
+        assert_runs_in_transaction(
+            instruction=execution_plan.send(None),
+            transaction=transaction,
+            effect_instruction=make_expected_instruction(effect, command),
+            result="effect_result",
+        )
+        with pytest.raises(StopIteration) as exc_info:
+            execution_plan.send("effect_result")
+        assert exc_info.value.value == "command_result effect_result"
+
     def test_runs_read_transaction_with_its_arguments_in_run_transaction_instruction(self) -> None:
         @ReadTransaction
         def transaction(prefix: str, suffix: str) -> ReadTransactionEffectful[str]:
@@ -1178,8 +1221,8 @@ class TestTransactions:
         assert_generator(
             generator=instruction.plan,
             steps=[
-                YeildStep(make_expected_instruction(first_read, query), "first"),
-                YeildStep(make_expected_instruction(second_read, query), "second"),
+                YieldStep(make_expected_instruction(first_read, query), "first"),
+                YieldStep(make_expected_instruction(second_read, query), "second"),
             ],
             return_value="prefix first second suffix",
         )
@@ -1555,10 +1598,15 @@ class TestEvents:
         assert isinstance(write_instruction.effect, TestDatabaseWriteEffect)
         with pytest.raises(StopIteration):
             instruction.plan.send("write_result")
-        outbox_instruction = execution_plan.send("write_result")
+        outbox_transaction_instruction = execution_plan.send("write_result")
+        assert isinstance(outbox_transaction_instruction, RunTransactionInstruction)
+        assert outbox_transaction_instruction.transaction is IMPLICIT_WRITE_TRANSACTION
+        outbox_instruction = outbox_transaction_instruction.plan.send(None)
         assert isinstance(outbox_instruction, CallEffectHandlerInstruction)
         assert isinstance(outbox_instruction.effect, WriteOutboxEffect)
         assert [outbox_event.event for outbox_event in outbox_instruction.effect.events] == [first, second]
+        with pytest.raises(StopIteration):
+            outbox_transaction_instruction.plan.send(None)
         with pytest.raises(StopIteration) as exc_info:
             execution_plan.send(None)
         assert exc_info.value.value == "write_result None"
@@ -1852,6 +1900,22 @@ def run_plan(
 
 def raise_effect_error(instruction: CallEffectHandlerInstruction[Any]) -> object:
     raise ValueError("effect_error")
+
+
+def assert_runs_in_transaction(
+    instruction: Instruction[Any],
+    transaction: AnyTransaction,
+    effect_instruction: CallEffectHandlerInstruction[Any],
+    result: object,
+) -> None:
+    """Checks that the instruction runs only the effect in the transaction and returns the result of the effect."""
+    assert isinstance(instruction, RunTransactionInstruction)
+    assert instruction.transaction is transaction
+    assert_generator(
+        generator=instruction.plan,
+        steps=[YieldStep(effect_instruction, result)],
+        return_value=result,
+    )
 
 
 def make_expected_instruction(effect: HandledEffect[Any], message: Message[Any]) -> CallEffectHandlerInstruction[Any]:

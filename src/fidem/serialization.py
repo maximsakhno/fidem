@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, MutableMapping, Sequence
 from typing import Any, final, overload
 
+from fidem.errors import Error
+
 __all__ = [
     "Codec",
     "DeserializationError",
@@ -75,14 +77,14 @@ class Serializer(ABC):
         raise NotImplementedError
 
 
-class UnsupportedTypeError(Exception):
+class UnsupportedTypeError(Error):
     def __init__(self, type_: object) -> None:
         super().__init__(type_)
 
 
-class SerializationError(Exception):
+class SerializationError(Error):
     pass
 
 
-class DeserializationError(Exception):
+class DeserializationError(Error):
     pass

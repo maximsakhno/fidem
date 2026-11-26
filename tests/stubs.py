@@ -3,16 +3,16 @@ from typing import Any
 
 import pytest
 
-from fidem.testing import RaiseStep, YeildStep
+from fidem.testing import RaiseStep, YieldStep
 
 
 class GeneratorFunctionStub:
     def __init__(
         self,
-        steps: Sequence[YeildStep | RaiseStep] = (),
+        steps: Sequence[YieldStep | RaiseStep] = (),
         return_value: object = None,
     ) -> None:
-        self._steps: Sequence[YeildStep | RaiseStep] = steps
+        self._steps: Sequence[YieldStep | RaiseStep] = steps
         self._return_value: object = return_value
 
     def __call__(self, *args: Any, **kwargs: Any) -> Generator[Any, Any, Any]:
@@ -20,7 +20,7 @@ class GeneratorFunctionStub:
             if isinstance(step, RaiseStep):
                 raise step.exception
             else:
-                send_value = yield step.yeild_value
+                send_value = yield step.yield_value
                 assert send_value == step.send_value
 
         return self._return_value
