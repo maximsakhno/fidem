@@ -1,4 +1,4 @@
-from asyncio import Barrier, CancelledError, Event, create_task, gather, sleep, timeout
+from asyncio import Barrier, CancelledError, Event, Future, create_task, ensure_future, gather, sleep, timeout
 from collections.abc import AsyncGenerator, Awaitable, Callable, Collection, MutableSequence, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -1279,7 +1279,9 @@ class TestEffectMiddlewares:
         assert events == ["start", "stop"]
         assert resources[0] is resources[1]
 
-    async def test_raises_scope_closed_error_and_closes_dependency_when_handler_called_after_message(self) -> None:
+    async def test_raises_scope_closed_error_without_creating_dependency_when_handler_called_after_message(
+        self,
+    ) -> None:
         async def middleware(effect_call: EffectCall, call_next: CallNext) -> object:
             calls_next.append(call_next)
             return None
@@ -1311,6 +1313,82 @@ class TestEffectMiddlewares:
             await environment.execute(TestCommand())
             with pytest.raises(ScopeClosedError):
                 await calls_next[0]()
+
+        assert events == []
+
+    async def test_raises_scope_closed_error_when_handler_called_again_after_message(self) -> None:
+        async def middleware(effect_call: EffectCall, call_next: CallNext) -> object:
+            calls_next.append(call_next)
+            return await call_next()
+
+        async def resource() -> AsyncGenerator[Resource]:
+            events.append("start")
+            try:
+                yield Resource()
+            finally:
+                events.append("stop")
+
+        async def handler(resource: Resource) -> None:
+            events.append("handler")
+
+        calls_next: MutableSequence[CallNext] = []
+        events: MutableSequence[str] = []
+        environment = self._make_environment(
+            handler=handler,
+            effect_middleware_defs=[EffectMiddlewareDef(middleware)],
+            dependency_defs=[
+                EffectDependencyDef(
+                    factory=resource,
+                    lifetime=EffectDependencyLifetime.MESSAGE,
+                )
+            ],
+        )
+
+        async with environment:
+            await environment.execute(TestCommand())
+            with pytest.raises(ScopeClosedError):
+                await calls_next[0]()
+
+        assert events == ["start", "handler", "stop"]
+
+    async def test_raises_scope_closed_error_and_closes_dependency_created_while_message_finished(self) -> None:
+        async def middleware(effect_call: EffectCall, call_next: CallNext) -> object:
+            calls.append(ensure_future(call_next()))
+            await resource_started.wait()
+            return None
+
+        async def resource() -> AsyncGenerator[Resource]:
+            events.append("start")
+            resource_started.set()
+            await message_finished.wait()
+            try:
+                yield Resource()
+            finally:
+                events.append("stop")
+
+        async def handler(resource: Resource) -> None:
+            raise AssertionError("must not be called")
+
+        calls: MutableSequence[Future[object]] = []
+        events: MutableSequence[str] = []
+        resource_started = Event()
+        message_finished = Event()
+        environment = self._make_environment(
+            handler=handler,
+            effect_middleware_defs=[EffectMiddlewareDef(middleware)],
+            dependency_defs=[
+                EffectDependencyDef(
+                    factory=resource,
+                    lifetime=EffectDependencyLifetime.MESSAGE,
+                )
+            ],
+        )
+
+        async with environment:
+            await environment.execute(TestCommand())
+            message_finished.set()
+            with pytest.raises(ScopeClosedError):
+                await calls[0]
 
         assert events == ["start", "stop"]
 

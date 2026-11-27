@@ -167,6 +167,10 @@ class Scope:
         return self._context_managers
 
     @property
+    def is_closed(self) -> bool:
+        return self._is_closed
+
+    @property
     def lock(self) -> Lock:
         """Serializes lazy resolution, created on first use because most scopes never need it."""
         if self._lock is None:
@@ -248,6 +252,9 @@ class _EffectResolutionStep:
 
     async def run(self, scopes: Scopes) -> None:
         scope = scopes[self.provider.lifetime]
+        # A closed scope keeps its closed dependencies, a call after the scope must not get them.
+        if scope.is_closed:
+            raise ScopeClosedError(self.provider.key)
         if self.provider.lifetime not in self._LAZY_LIFETIMES:
             await self._resolve(scope, scopes)
         elif self.provider.key not in scope.dependencies:
