@@ -1,6 +1,7 @@
 from collections.abc import AsyncGenerator, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Final, Literal, cast
 
 from asyncpg import Connection, Pool
 
@@ -74,16 +75,29 @@ class AsyncpgConnectionDef(EffectDependencyDef[Connection]):
                 if read_only and options.isolation == "read_committed":
                     yield connection
                 else:
-                    isolation = options.isolation.replace("_", " ").upper()
-                    access_mode = " READ ONLY" if read_only else ""
-                    await connection.execute(f"BEGIN ISOLATION LEVEL {isolation}{access_mode}")
-                    try:
+                    async with _transaction(connection, options.isolation, read_only=read_only):
                         yield connection
-                    except BaseException:
-                        await connection.execute("ROLLBACK")
-                        raise
-                    # Unlike `Connection.transaction()`, this sees that the commit of a failed transaction rolled it back.
-                    if await connection.execute("COMMIT") == "ROLLBACK":
-                        raise TransactionRolledBackError
 
         return connection
+
+
+_ISOLATION_SQL: Final[Mapping[IsolationLevel, str]] = {
+    "read_committed": "READ COMMITTED",
+    "repeatable_read": "REPEATABLE READ",
+    "serializable": "SERIALIZABLE",
+}
+
+
+@asynccontextmanager
+async def _transaction(connection: Connection, isolation: IsolationLevel, *, read_only: bool) -> AsyncGenerator[None]:
+    """Commits the transaction, rolls it back on any error or cancellation."""
+    access_mode = " READ ONLY" if read_only else ""
+    await connection.execute(f"BEGIN ISOLATION LEVEL {_ISOLATION_SQL[isolation]}{access_mode}")
+    try:
+        yield
+    except BaseException:
+        await connection.execute("ROLLBACK")
+        raise
+    # Unlike `Connection.transaction()`, this sees that the commit of a failed transaction rolled it back.
+    if await connection.execute("COMMIT") == "ROLLBACK":
+        raise TransactionRolledBackError
