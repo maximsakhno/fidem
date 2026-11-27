@@ -11,11 +11,12 @@ from uuid import uuid4
 from fidem._validation import check_unique
 from fidem.di.core import UnsupportedFunctionError
 from fidem.di.effects import EffectDependencyContainer, EffectDependencyDef, PreparedEffectHandler, Scope, Scopes
-from fidem.effects import DatabaseEffect, Effect, EffectContext
+from fidem.effects import DatabaseEffect, Effect
 from fidem.errors import Error
 from fidem.messages import Command, Message, MessageContext, MessageId, Query
 from fidem.operation_engine.instructions import (
     CallEffectHandlerInstruction,
+    EffectCall,
     ExecutionPlan,
     Instruction,
     OperationEngine,
@@ -26,7 +27,6 @@ from fidem.transactions import AnyTransaction, TransactionContext
 __all__ = [
     "CallNext",
     "DuplicateEffectDefError",
-    "EffectCall",
     "EffectDef",
     "EffectMiddleware",
     "EffectMiddlewareDef",
@@ -36,14 +36,6 @@ __all__ = [
     "EnvironmentImpl",
     "EnvironmentNotStartedError",
 ]
-
-
-@dataclass(frozen=True, slots=True)
-class EffectCall:
-    message_context: MessageContext
-    message: Message[Any]
-    effect_context: EffectContext
-    effect: Effect[Any]
 
 
 type CallNext = Callable[[], Awaitable[object]]
@@ -238,33 +230,28 @@ class EnvironmentImpl(Environment):
         scopes: Scopes,
         transaction_scope: Scope | None,
     ) -> CallNext:
-        if isinstance(instruction, CallEffectHandlerInstruction):
-            prepared_effect = self._get_effect(type(instruction.effect))
-            effect_call = EffectCall(
-                message_context=instruction.message_context,
-                message=instruction.message,
-                effect_context=instruction.effect_context,
-                effect=instruction.effect,
-            )
-            call_next: CallNext = partial(
-                self._call_effect_handler,
-                prepared_effect=prepared_effect,
-                effect_call=effect_call,
-                scopes=scopes,
-                transaction_scope=transaction_scope,
-            )
-            for middleware in reversed(prepared_effect.middlewares):
-                call_next = partial(middleware, effect_call, call_next)
-            return call_next
-        # A nested transaction would silently take another connection instead of joining the transaction.
-        if isinstance(instruction, RunTransactionInstruction) and transaction_scope is None:
-            return partial(
-                self._run_transaction,
-                transaction=instruction.transaction,
-                plan=instruction.plan,
-                scopes=scopes,
-            )
-        raise NotImplementedError(instruction)
+        match instruction:
+            case CallEffectHandlerInstruction(call=effect_call):
+                return self._make_effect_chain(effect_call, scopes, transaction_scope)
+            # A nested transaction would silently take another connection instead of joining the transaction.
+            case RunTransactionInstruction(transaction=transaction, plan=plan) if transaction_scope is None:
+                return partial(self._run_transaction, transaction=transaction, plan=plan, scopes=scopes)
+            case _:
+                raise NotImplementedError(instruction)
+
+    def _make_effect_chain(self, effect_call: EffectCall, scopes: Scopes, transaction_scope: Scope | None) -> CallNext:
+        """Makes the call of the outer middleware of the effect, the last one calls the handler."""
+        prepared_effect = self._get_effect(type(effect_call.effect))
+        call_next: CallNext = partial(
+            self._call_effect_handler,
+            prepared_effect=prepared_effect,
+            effect_call=effect_call,
+            scopes=scopes,
+            transaction_scope=transaction_scope,
+        )
+        for middleware in reversed(prepared_effect.middlewares):
+            call_next = partial(middleware, effect_call, call_next)
+        return call_next
 
     def _get_effect(self, effect_type: type[Effect[Any]]) -> _PreparedEffect:
         prepared_effect = self._type_to_effect.get(effect_type)

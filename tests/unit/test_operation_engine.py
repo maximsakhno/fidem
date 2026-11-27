@@ -46,6 +46,7 @@ from fidem.operation_engine.errors import (
 )
 from fidem.operation_engine.instructions import (
     CallEffectHandlerInstruction,
+    EffectCall,
     ExecutionPlan,
     HandledEffect,
     Instruction,
@@ -478,7 +479,7 @@ class TestExecuteAtomic:
         result = run_plan(
             execution_plan=engine.execute(TestCommand(), MESSAGE_CONTEXT),
             call_effect_handler=lambda instruction: (
-                effect_ids.append(instruction.effect_context.effect_id) or "effect_result"
+                effect_ids.append(instruction.call.effect_context.effect_id) or "effect_result"
             ),
         )
 
@@ -502,7 +503,7 @@ class TestExecuteAtomic:
 
         run_plan(
             execution_plan=engine.execute(TestCommand(), MESSAGE_CONTEXT),
-            call_effect_handler=lambda instruction: effect_types.append(type(instruction.effect)),
+            call_effect_handler=lambda instruction: effect_types.append(type(instruction.call.effect)),
         )
 
         assert len(services) == 1
@@ -1153,7 +1154,7 @@ class TestExecuteQuery:
 
         result = run_plan(
             execution_plan=engine.query(TestQuery(), MESSAGE_CONTEXT),
-            call_effect_handler=lambda instruction: effect_types.append(type(instruction.effect)),
+            call_effect_handler=lambda instruction: effect_types.append(type(instruction.call.effect)),
         )
 
         assert result == "query_result"
@@ -1289,7 +1290,9 @@ class TestTransactions:
 
         result = run_plan(
             execution_plan=make_engine(handler).execute(TestCommand(), MESSAGE_CONTEXT),
-            call_effect_handler=lambda instruction: effect_types.append(type(instruction.effect)) or "effect_result",
+            call_effect_handler=lambda instruction: (
+                effect_types.append(type(instruction.call.effect)) or "effect_result"
+            ),
             on_transaction=transactions.append,
         )
 
@@ -1503,11 +1506,11 @@ class TestEvents:
         assert isinstance(instruction, RunTransactionInstruction)
         write_instruction = instruction.plan.send(None)
         assert isinstance(write_instruction, CallEffectHandlerInstruction)
-        assert isinstance(write_instruction.effect, TestDatabaseWriteEffect)
+        assert isinstance(write_instruction.call.effect, TestDatabaseWriteEffect)
         outbox_instruction = instruction.plan.send("write_result")
         assert isinstance(outbox_instruction, CallEffectHandlerInstruction)
-        assert isinstance(outbox_instruction.effect, WriteOutboxEffect)
-        assert [outbox_event.event for outbox_event in outbox_instruction.effect.events] == [event]
+        assert isinstance(outbox_instruction.call.effect, WriteOutboxEffect)
+        assert [outbox_event.event for outbox_event in outbox_instruction.call.effect.events] == [event]
         with pytest.raises(StopIteration) as exc_info:
             instruction.plan.send(None)
         assert exc_info.value.value == "write_result"
@@ -1518,9 +1521,9 @@ class TestEvents:
         effects = collect_effects(plan_publishing(event))
 
         assert len(effects) == 1
-        assert isinstance(effects[0].effect, WriteOutboxEffect)
-        outbox_event = effects[0].effect.events[0]
-        assert effects[0].effect.events == (
+        assert isinstance(effects[0].call.effect, WriteOutboxEffect)
+        outbox_event = effects[0].call.effect.events[0]
+        assert effects[0].call.effect.events == (
             OutboxEvent(
                 event_id=outbox_event.event_id,
                 source_message_id="test_message_id",
@@ -1546,19 +1549,19 @@ class TestEvents:
         effects = collect_effects(make_engine(handler, event_defs=EVENT_DEFS).execute(TestCommand(), MESSAGE_CONTEXT))
         plain_effect_ids = collect_effect_ids(make_engine(plain_handler).execute(TestCommand(), MESSAGE_CONTEXT))
 
-        outbox_effect = effects[2].effect
+        outbox_effect = effects[2].call.effect
         assert isinstance(outbox_effect, WriteOutboxEffect)
-        assert [effects[0].effect_context.effect_id, outbox_effect.events[0].event_id] == plain_effect_ids[:2]
-        assert effects[1].effect_context.effect_id == plain_effect_ids[2]
+        assert [effects[0].call.effect_context.effect_id, outbox_effect.events[0].event_id] == plain_effect_ids[:2]
+        assert effects[1].call.effect_context.effect_id == plain_effect_ids[2]
 
     def test_generates_same_event_ids_for_same_message_id(self) -> None:
         first = collect_effects(plan_publishing(TestEvent()))
         second = collect_effects(plan_publishing(TestEvent()))
 
-        assert [effect.effect_context for effect in first] == [effect.effect_context for effect in second]
-        assert isinstance(first[0].effect, WriteOutboxEffect)
-        assert isinstance(second[0].effect, WriteOutboxEffect)
-        assert first[0].effect.events[0].event_id == second[0].effect.events[0].event_id
+        assert [effect.call.effect_context for effect in first] == [effect.call.effect_context for effect in second]
+        assert isinstance(first[0].call.effect, WriteOutboxEffect)
+        assert isinstance(second[0].call.effect, WriteOutboxEffect)
+        assert first[0].call.effect.events[0].event_id == second[0].call.effect.events[0].event_id
 
     def test_writes_events_of_transaction_in_one_effect_and_skips_events_without_handlers(self) -> None:
         @WriteTransaction
@@ -1578,8 +1581,8 @@ class TestEvents:
         effects = collect_effects(engine.execute(TestCommand(), MESSAGE_CONTEXT))
 
         assert len(effects) == 1
-        assert isinstance(effects[0].effect, WriteOutboxEffect)
-        assert [outbox_event.event for outbox_event in effects[0].effect.events] == [first, second]
+        assert isinstance(effects[0].call.effect, WriteOutboxEffect)
+        assert [outbox_event.event for outbox_event in effects[0].call.effect.events] == [first, second]
 
     @pytest.mark.parametrize(
         argnames=("command_def_type", "handler"),
@@ -1594,7 +1597,7 @@ class TestEvents:
 
         effects = collect_effects(engine.execute(TestCommand(), MESSAGE_CONTEXT))
 
-        assert not any(isinstance(effect.effect, WriteOutboxEffect) for effect in effects)
+        assert not any(isinstance(effect.call.effect, WriteOutboxEffect) for effect in effects)
 
     def test_writes_events_of_staged_handler_after_it_returns_outside_its_transactions(self) -> None:
         def handler() -> StagedEffectful[str, Event]:
@@ -1610,7 +1613,7 @@ class TestEvents:
         assert isinstance(instruction, RunTransactionInstruction)
         write_instruction = instruction.plan.send(None)
         assert isinstance(write_instruction, CallEffectHandlerInstruction)
-        assert isinstance(write_instruction.effect, TestDatabaseWriteEffect)
+        assert isinstance(write_instruction.call.effect, TestDatabaseWriteEffect)
         with pytest.raises(StopIteration):
             instruction.plan.send("write_result")
         outbox_transaction_instruction = execution_plan.send("write_result")
@@ -1618,8 +1621,8 @@ class TestEvents:
         assert outbox_transaction_instruction.transaction is IMPLICIT_WRITE_TRANSACTION
         outbox_instruction = outbox_transaction_instruction.plan.send(None)
         assert isinstance(outbox_instruction, CallEffectHandlerInstruction)
-        assert isinstance(outbox_instruction.effect, WriteOutboxEffect)
-        assert [outbox_event.event for outbox_event in outbox_instruction.effect.events] == [first, second]
+        assert isinstance(outbox_instruction.call.effect, WriteOutboxEffect)
+        assert [outbox_event.event for outbox_event in outbox_instruction.call.effect.events] == [first, second]
         with pytest.raises(StopIteration):
             outbox_transaction_instruction.plan.send(None)
         with pytest.raises(StopIteration) as exc_info:
@@ -1646,8 +1649,8 @@ class TestEvents:
         effects = collect_effects(engine.execute(TestCommand(), MESSAGE_CONTEXT))
 
         assert len(effects) == 1
-        assert isinstance(effects[0].effect, WriteOutboxEffect)
-        assert [outbox_event.event for outbox_event in effects[0].effect.events] == [event]
+        assert isinstance(effects[0].call.effect, WriteOutboxEffect)
+        assert [outbox_event.event for outbox_event in effects[0].call.effect.events] == [event]
 
     @pytest.mark.parametrize(
         argnames=("command_def_type", "handler"),
@@ -1659,8 +1662,8 @@ class TestEvents:
         handler: StagedHandler[Any, Any],
     ) -> None:
         def write_outbox_once(instruction: CallEffectHandlerInstruction[Any]) -> object:
-            if isinstance(instruction.effect, WriteOutboxEffect):
-                outbox_effects.append(instruction.effect)
+            if isinstance(instruction.call.effect, WriteOutboxEffect):
+                outbox_effects.append(instruction.call.effect)
                 if len(outbox_effects) == 1:
                     raise ValueError("outbox_error")
             return "effect_result"
@@ -1886,7 +1889,7 @@ def make_service_with_two_effects() -> Effectful[Service, QueryEffect]:
 
 
 def collect_effect_ids(execution_plan: ExecutionPlan[Any]) -> Sequence[str]:
-    return [instruction.effect_context.effect_id for instruction in collect_effects(execution_plan)]
+    return [instruction.call.effect_context.effect_id for instruction in collect_effects(execution_plan)]
 
 
 def run_plan(
@@ -1934,12 +1937,13 @@ def assert_runs_in_transaction(
 
 
 def make_expected_instruction(effect: HandledEffect[Any], message: Message[Any]) -> CallEffectHandlerInstruction[Any]:
-    return CallEffectHandlerInstruction(
+    effect_call = EffectCall(
         message_context=MessageContext(message_id="test_message_id"),
         message=message,
         effect_context=EffectContext(effect_id=ANY),
         effect=effect,
     )
+    return CallEffectHandlerInstruction(call=effect_call)
 
 
 MESSAGE_CONTEXT = MessageContext(message_id="test_message_id")

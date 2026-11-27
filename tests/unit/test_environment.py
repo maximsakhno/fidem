@@ -12,7 +12,6 @@ from fidem.effects import Effect, EffectContext, Effectful, InternalEffect
 from fidem.environment import (
     CallNext,
     DuplicateEffectDefError,
-    EffectCall,
     EffectDef,
     EffectMiddlewareDef,
     EffectNotDefinedError,
@@ -26,6 +25,7 @@ from fidem.operation_engine.definitions import AtomicCommandDef, StagedCommandDe
 from fidem.operation_engine.engine import OperationEngineImpl
 from fidem.operation_engine.instructions import (
     CallEffectHandlerInstruction,
+    EffectCall,
     ExecutionPlan,
     HandledEffect,
     Instruction,
@@ -139,7 +139,7 @@ class TestExecute:
         async with environment:
             await environment.execute(TestCommand())
 
-        assert calls == [EffectHandlerCall(context=instruction.effect_context, effect=instruction.effect)]
+        assert calls == [EffectHandlerCall(context=instruction.call.effect_context, effect=instruction.call.effect)]
 
     async def test_throws_effect_handler_error_into_execution_plan(self) -> None:
         def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
@@ -682,8 +682,8 @@ class TestEffectHandlerDependencies:
             BuiltinDependencies(
                 message=command,
                 message_context=MessageContext(message_id="test_message_id"),
-                effect=instruction.effect,
-                effect_context=instruction.effect_context,
+                effect=instruction.call.effect,
+                effect_context=instruction.call.effect_context,
             )
         ]
 
@@ -999,10 +999,10 @@ class TestEffectMiddlewares:
 
         assert effect_calls == [
             EffectCall(
-                message_context=instruction.message_context,
-                message=instruction.message,
-                effect_context=instruction.effect_context,
-                effect=instruction.effect,
+                message_context=instruction.call.message_context,
+                message=instruction.call.message,
+                effect_context=instruction.call.effect_context,
+                effect=instruction.call.effect,
             )
         ]
 
@@ -1377,12 +1377,13 @@ def make_instruction(
     effect: HandledEffect[str] | None = None,
     effect_id: str = "test_effect_id",
 ) -> CallEffectHandlerInstruction[str]:
-    return CallEffectHandlerInstruction(
+    effect_call = EffectCall(
         message_context=MessageContext(message_id="test_message_id"),
         message=TestCommand(),
         effect_context=EffectContext(effect_id=effect_id),
         effect=TestInternalEffect() if effect is None else effect,
     )
+    return CallEffectHandlerInstruction(call=effect_call)
 
 
 def write_plan() -> ExecutionPlan[object]:
