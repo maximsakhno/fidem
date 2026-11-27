@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 
 from fidem.effects import Effect, EffectContext, Effectful
-from fidem.environment import EffectDef, EffectNotDefinedError, EnvironmentImpl, EnvironmentNotStartedError
+from fidem.environment import EffectDef, EffectNotDefinedError, EnvironmentImpl
 from fidem.guards import GuardDef
 from fidem.messages import MessageContext, QueryEffect
 from fidem.operation_engine.definitions import StagedCommandDef
@@ -13,7 +13,7 @@ from fidem.operation_engine.engine import OperationEngineImpl
 from fidem.operation_engine.instructions import ExecutionPlan, Instruction
 from fidem.testing import YieldStep
 from tests.effects import TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
-from tests.messages import TestCommand, TestQuery
+from tests.messages import TestCommand
 from tests.stubs import GeneratorFunctionStub
 from tests.unit.environment.helpers import Config, make_failing_handler, make_instruction, make_operation_engine_mock
 
@@ -24,16 +24,16 @@ class EffectHandlerCall:
     effect: Effect[Any]
 
 
-class TestExecute:
+class TestHandle:
     async def test_passes_command_and_message_context_into_operation_engine(self) -> None:
         command = TestCommand()
         operation_engine_mock = make_operation_engine_mock(GeneratorFunctionStub())
 
         async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
-            await environment.execute(command, "test_message_id")
+            await environment.handle(command, "test_message_id")
 
-        operation_engine_mock.execute.assert_called_once_with(
-            command=command,
+        operation_engine_mock.handle.assert_called_once_with(
+            message=command,
             message_context=MessageContext(message_id="test_message_id"),
         )
 
@@ -51,20 +51,20 @@ class TestExecute:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
-        assert message_contexts == [operation_engine_mock.execute.call_args.kwargs["message_context"]]
-        assert message_contexts[0] is operation_engine_mock.execute.call_args.kwargs["message_context"]
+        assert message_contexts == [operation_engine_mock.handle.call_args.kwargs["message_context"]]
+        assert message_contexts[0] is operation_engine_mock.handle.call_args.kwargs["message_context"]
 
     async def test_generates_different_message_ids_when_message_id_not_passed(self) -> None:
         operation_engine_mock = make_operation_engine_mock(GeneratorFunctionStub())
 
         async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
-            await environment.execute(TestCommand())
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
+            await environment.handle(TestCommand())
 
         message_ids = {
-            call.kwargs["message_context"].message_id for call in operation_engine_mock.execute.call_args_list
+            call.kwargs["message_context"].message_id for call in operation_engine_mock.handle.call_args_list
         }
         assert len(message_ids) == 2
 
@@ -73,7 +73,7 @@ class TestExecute:
         operation_engine_mock = make_operation_engine_mock(GeneratorFunctionStub(return_value=execution_plan_result))
 
         async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == execution_plan_result
 
@@ -94,12 +94,12 @@ class TestExecute:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
         assert calls == [EffectHandlerCall(context=instruction.call.effect_context, effect=instruction.call.effect)]
 
     async def test_throws_effect_handler_error_into_execution_plan(self) -> None:
-        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
+        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
             try:
                 yield make_instruction()
             except ValueError as exc:
@@ -112,7 +112,7 @@ class TestExecute:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "effect_error"
 
@@ -127,12 +127,12 @@ class TestExecute:
 
         async with environment:
             with pytest.raises(ValueError, match="effect_error") as exc_info:
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
         assert exc_info.value is effect_error
 
     async def test_does_not_throw_effect_not_defined_error_into_execution_plan(self) -> None:
-        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
+        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
             nonlocal is_execution_plan_closed
             try:
                 yield make_instruction()
@@ -146,7 +146,7 @@ class TestExecute:
 
         async with EnvironmentImpl(operation_engine=make_operation_engine_mock(execution_plan)) as environment:
             with pytest.raises(EffectNotDefinedError):
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
         assert is_execution_plan_closed
 
@@ -157,7 +157,7 @@ class TestExecute:
 
         async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
             with pytest.raises(EffectNotDefinedError) as exc_info:
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
         assert exc_info.value.args == (TestInternalEffect,)
 
@@ -171,7 +171,7 @@ class TestExecute:
 
         async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
             with pytest.raises(NotImplementedError):
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
 
 class TestExecuteWithOperationEngine:
@@ -201,7 +201,7 @@ class TestExecuteWithOperationEngine:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "internal, external, database"
 
@@ -222,67 +222,11 @@ class TestExecuteWithOperationEngine:
         )
 
         async with environment:
-            await environment.execute(TestCommand(), "test_message_id")
-            await environment.execute(TestCommand(), "test_message_id")
+            await environment.handle(TestCommand(), "test_message_id")
+            await environment.handle(TestCommand(), "test_message_id")
 
         assert effect_ids[:2] == effect_ids[2:]
         assert len(set(effect_ids)) == 2
-
-
-class TestExecuteQuery:
-    async def test_passes_query_and_message_context_into_operation_engine_and_returns_plan_result(self) -> None:
-        query = TestQuery()
-        operation_engine_mock = make_operation_engine_mock(
-            query_plan=GeneratorFunctionStub(return_value="query_result")
-        )
-
-        async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
-            result = await environment.query(query, "test_message_id")
-
-        assert result == "query_result"
-        operation_engine_mock.query.assert_called_once_with(
-            query=query,
-            message_context=MessageContext(message_id="test_message_id"),
-        )
-        operation_engine_mock.execute.assert_not_called()
-
-    async def test_passes_query_into_effect_handler_and_sends_its_result_into_query_plan(self) -> None:
-        async def handler(message: TestQuery) -> str:
-            messages.append(message)
-            return "effect_result"
-
-        def query_plan(query: TestQuery, message_context: MessageContext) -> ExecutionPlan[object]:
-            return (yield make_instruction())
-
-        messages: MutableSequence[TestQuery] = []
-        query = TestQuery()
-        environment = EnvironmentImpl(
-            operation_engine=make_operation_engine_mock(query_plan=query_plan),
-            effect_defs=[EffectDef(TestInternalEffect, handler)],
-        )
-
-        async with environment:
-            result = await environment.query(query)
-
-        assert result == "effect_result"
-        assert messages == [query]
-        assert messages[0] is query
-
-    async def test_generates_different_message_ids_when_message_id_not_passed(self) -> None:
-        operation_engine_mock = make_operation_engine_mock(query_plan=GeneratorFunctionStub())
-
-        async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
-            await environment.query(TestQuery())
-            await environment.query(TestQuery())
-
-        message_ids = {call.kwargs["message_context"].message_id for call in operation_engine_mock.query.call_args_list}
-        assert len(message_ids) == 2
-
-    async def test_raises_environment_not_started_error_when_queries_before_start(self) -> None:
-        environment = EnvironmentImpl(operation_engine=make_operation_engine_mock(query_plan=GeneratorFunctionStub()))
-
-        with pytest.raises(EnvironmentNotStartedError):
-            await environment.query(TestQuery())
 
 
 class TestGuards:
@@ -306,6 +250,6 @@ class TestGuards:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand(), "test_message_id")
+            result = await environment.handle(TestCommand(), "test_message_id")
 
         assert result == "test_message_id effect_result"

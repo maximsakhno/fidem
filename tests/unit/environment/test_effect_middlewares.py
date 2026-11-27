@@ -34,7 +34,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "effect_result"
         assert events == ["first before", "second before", "handler", "second after", "first after"]
@@ -56,7 +56,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
         assert effect_calls == [
             EffectCall(
@@ -79,7 +79,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
         assert events == ["effect before", "handler", "effect after"]
 
@@ -95,7 +95,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
         assert events == ["handler"]
 
@@ -117,7 +117,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "middleware_result"
 
@@ -156,7 +156,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
         assert events == [
             "start message",
@@ -184,7 +184,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "resolution_error"
 
@@ -203,7 +203,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "closing_error"
 
@@ -211,7 +211,7 @@ class TestEffectMiddlewares:
         async def middleware(effect_call: EffectCall, call_next: CallNext) -> object:
             raise ValueError("middleware_error")
 
-        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
+        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
             try:
                 yield make_instruction()
             except ValueError as exc:
@@ -228,7 +228,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "middleware_error"
 
@@ -245,7 +245,7 @@ class TestEffectMiddlewares:
 
         async with environment:
             with pytest.raises(EffectNotDefinedError):
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
         assert events == []
 
@@ -275,7 +275,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "config_value"
         assert [type(effect) for effect in effects] == [TestInternalEffect]
@@ -301,8 +301,8 @@ class TestEffectMiddlewares:
 
         async with environment:
             results = await gather(
-                environment.execute(TestCommand(), "message1"),
-                environment.execute(TestCommand(), "message2"),
+                environment.handle(TestCommand(), "message1"),
+                environment.handle(TestCommand(), "message2"),
             )
 
         assert results == ["message1", "message2"]
@@ -335,7 +335,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
         assert events == ["start", "stop"]
         assert resources[0] is resources[1]
@@ -371,7 +371,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
             with pytest.raises(ScopeClosedError):
                 await calls_next[0]()
 
@@ -406,7 +406,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
             with pytest.raises(ScopeClosedError):
                 await calls_next[0]()
 
@@ -446,7 +446,7 @@ class TestEffectMiddlewares:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
             message_finished.set()
             with pytest.raises(ScopeClosedError):
                 await calls[0]
@@ -475,7 +475,7 @@ class TestEffectMiddlewares:
     ) -> EnvironmentImpl:
         """Makes an environment whose command yields one effect and returns its result."""
 
-        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
+        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
             return (yield make_instruction() if instruction is None else instruction)
 
         return EnvironmentImpl(

@@ -156,7 +156,7 @@ class TestWriteOutbox:
         environment = make_environment(outbox_pool, [AtomicCommandDef("test", TestCommand, handler)])
 
         async with environment:
-            await environment.execute(TestCommand(), message_id=message_id)
+            await environment.handle(TestCommand(), message_id=message_id)
 
         rows = await fetch_rows(outbox_pool, message_id)
         event_id = rows[0]["event_id"]
@@ -194,7 +194,7 @@ class TestWriteOutbox:
 
         async with environment:
             with pytest.raises(ValueError, match="effect_error"):
-                await environment.execute(TestCommand(), message_id=message_id)
+                await environment.handle(TestCommand(), message_id=message_id)
 
         assert await fetch_rows(outbox_pool, message_id) == []
 
@@ -207,8 +207,8 @@ class TestWriteOutbox:
         environment = make_environment(outbox_pool, [StagedCommandDef("test", TestCommand, handler)])
 
         async with environment:
-            await environment.execute(TestCommand(), message_id=message_id)
-            await environment.execute(TestCommand(), message_id=message_id)
+            await environment.handle(TestCommand(), message_id=message_id)
+            await environment.handle(TestCommand(), message_id=message_id)
 
         rows = await fetch_rows(outbox_pool, message_id)
         assert [(row["handler"], row["item_id"]) for row in rows] == [("audit", item_id), ("notify", item_id)]

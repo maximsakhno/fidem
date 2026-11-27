@@ -68,7 +68,7 @@ class TestMessageMiddlewares:
             middleware_defs=[MessageMiddlewareDef("test", middleware)],
         )
 
-        assert run(engine.execute(message, MESSAGE_CONTEXT)) == "test_message_id True Service command_result"
+        assert run(engine.handle(message, MESSAGE_CONTEXT)) == "test_message_id True Service command_result"
 
     def test_yields_call_effect_handler_instruction_when_middleware_yields_write_effect(self) -> None:
         def middleware() -> MessageMiddlewareEffectful[object]:
@@ -85,7 +85,7 @@ class TestMessageMiddlewares:
         engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
 
         assert_generator(
-            generator=engine.execute(command, MessageContext(message_id="test_message_id")),
+            generator=engine.handle(command, MessageContext(message_id="test_message_id")),
             steps=[YieldStep(make_expected_instruction(effect, command), "effect_result")],
             return_value="command_result",
         )
@@ -120,7 +120,7 @@ class TestMessageMiddlewares:
             middleware_defs=[MessageMiddlewareDef("outer", outer), MessageMiddlewareDef("inner", inner)],
         )
 
-        assert run(engine.execute(TestCommand(), MESSAGE_CONTEXT)) == "command_result"
+        assert run(engine.handle(TestCommand(), MESSAGE_CONTEXT)) == "command_result"
         assert events == ["guard", "outer before", "inner before", "handler", "inner after", "outer after"]
 
     def test_does_not_call_handler_when_middleware_does_not_proceed(self) -> None:
@@ -137,7 +137,7 @@ class TestMessageMiddlewares:
         is_handler_called = False
         engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
 
-        assert run(engine.execute(TestCommand(), MESSAGE_CONTEXT)) == "cached_result"
+        assert run(engine.handle(TestCommand(), MESSAGE_CONTEXT)) == "cached_result"
         assert not is_handler_called
 
     def test_runs_inner_part_anew_with_same_effect_ids_on_each_proceed_and_guards_once(self) -> None:
@@ -161,21 +161,21 @@ class TestMessageMiddlewares:
             middleware_defs=[MessageMiddlewareDef("test", middleware)],
         )
 
-        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+        effect_ids = collect_effect_ids(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert events == ["guard", "handler", "handler"]
         assert effect_ids[:3] == effect_ids[3:]
 
     def test_does_not_shift_handler_effect_ids_when_middleware_added(self) -> None:
         handler_effect_ids = collect_effect_ids(
-            make_engine(handle_with_three_effects).execute(TestCommand(), MESSAGE_CONTEXT)
+            make_engine(handle_with_three_effects).handle(TestCommand(), MESSAGE_CONTEXT)
         )
         engine = make_engine(
             handler=handle_with_three_effects,
             middleware_defs=[MessageMiddlewareDef("test", proceed_with_three_effects)],
         )
 
-        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+        effect_ids = collect_effect_ids(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert effect_ids[3:] == handler_effect_ids
         assert set(effect_ids[:3]).isdisjoint(handler_effect_ids)
@@ -189,7 +189,7 @@ class TestMessageMiddlewares:
             ],
         )
 
-        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+        effect_ids = collect_effect_ids(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert len(set(effect_ids)) == 9
 
@@ -206,7 +206,7 @@ class TestMessageMiddlewares:
             return "unreachable"
 
         engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan = engine.handle(TestCommand(), MESSAGE_CONTEXT)
         execution_plan.send(None)
 
         with pytest.raises(StopIteration) as exc_info:
@@ -234,7 +234,7 @@ class TestMessageMiddlewares:
         engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
+            engine.handle(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert exc_info.value.args == (effect,)
         assert is_middleware_closed
@@ -253,7 +253,7 @@ class TestMessageMiddlewares:
 
         effect = TestControlEffect()
         engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan = engine.handle(TestCommand(), MESSAGE_CONTEXT)
         execution_plan.send(None)
 
         with pytest.raises(StopIteration) as exc_info:
@@ -272,7 +272,7 @@ class TestMessageMiddlewares:
         engine = make_engine(handle_without_effects, middleware_defs=[MessageMiddlewareDef("test", middleware)])
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+            run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert exc_info.value.args == (Proceed(),)
 
@@ -288,7 +288,7 @@ class TestMessageMiddlewares:
         engine = make_engine(handle_with_three_effects, middleware_defs=[MessageMiddlewareDef("test", middleware)])
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
+            engine.handle(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert exc_info.value.args == (effect,)
 
@@ -308,7 +308,7 @@ class TestMessageMiddlewares:
 
         events: MutableSequence[str] = []
         engine = make_engine(handler, middleware_defs=[MessageMiddlewareDef("test", middleware)])
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan = engine.handle(TestCommand(), MESSAGE_CONTEXT)
         execution_plan.send(None)
 
         execution_plan.close()
@@ -336,7 +336,7 @@ class TestMessageMiddlewares:
             command_middleware_defs=command_middleware_defs,
         )
 
-        assert run(engine.execute(TestCommand(), MESSAGE_CONTEXT)) == expected_result
+        assert run(engine.handle(TestCommand(), MESSAGE_CONTEXT)) == expected_result
 
     @pytest.mark.parametrize("is_command_list", [False, True])
     def test_raises_duplicate_message_middleware_def_error_when_middlewares_have_same_name(

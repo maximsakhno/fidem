@@ -59,7 +59,7 @@ class TestGuards:
         engine = make_engine(handler, [GuardDef(service), GuardDef(other)])
 
         assert_generator(
-            generator=engine.execute(command, MessageContext(message_id="test_message_id")),
+            generator=engine.handle(command, MessageContext(message_id="test_message_id")),
             steps=[
                 YieldStep(make_expected_instruction(internal_effect, command), "internal_result"),
                 YieldStep(make_expected_instruction(external_effect, command), "external_result"),
@@ -79,8 +79,8 @@ class TestGuards:
 
         engine = make_engine(handler, [GuardDef(service)])
 
-        first = run(engine.execute(TestCommand(), MESSAGE_CONTEXT))
-        second = run(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+        first = run(engine.handle(TestCommand(), MESSAGE_CONTEXT))
+        second = run(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert first is not second
 
@@ -97,7 +97,7 @@ class TestGuards:
             return type(service).__name__
 
         engine = make_engine(handler, [GuardDef(service)])
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan = engine.handle(TestCommand(), MESSAGE_CONTEXT)
         execution_plan.send(None)
 
         with pytest.raises(StopIteration) as exc_info:
@@ -120,7 +120,7 @@ class TestGuards:
         engine = make_engine(handler, [GuardDef(service)])
 
         with pytest.raises(PermissionError, match="forbidden"):
-            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
+            engine.handle(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert not is_handler_called
 
@@ -158,7 +158,7 @@ class TestGuards:
         engine = make_engine(handler, [GuardDef(service)])
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
+            engine.handle(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert exc_info.value.args == (effect,)
         assert is_guard_closed
@@ -166,19 +166,19 @@ class TestGuards:
     def test_generates_same_guard_effect_ids_for_same_message_id(self) -> None:
         engine = make_engine(handle_service_with_three_effects, [GuardDef(make_service_with_two_effects)])
 
-        effect_ids1 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
-        effect_ids2 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
+        effect_ids1 = collect_effect_ids(engine.handle(TestCommand(), MessageContext(message_id="test_message_id")))
+        effect_ids2 = collect_effect_ids(engine.handle(TestCommand(), MessageContext(message_id="test_message_id")))
 
         assert effect_ids1 == effect_ids2
         assert len(set(effect_ids1)) == 5
 
     def test_does_not_shift_handler_effect_ids_when_guard_added(self) -> None:
         handler_effect_ids = collect_effect_ids(
-            make_engine(handle_with_three_effects).execute(TestCommand(), MessageContext(message_id="test_message_id"))
+            make_engine(handle_with_three_effects).handle(TestCommand(), MessageContext(message_id="test_message_id"))
         )
         engine = make_engine(handle_service_with_three_effects, [GuardDef(make_service_with_two_effects)])
 
-        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
+        effect_ids = collect_effect_ids(engine.handle(TestCommand(), MessageContext(message_id="test_message_id")))
 
         assert effect_ids[2:] == handler_effect_ids
 
@@ -187,10 +187,10 @@ class TestGuards:
             handler=handle_service_with_three_effects,
             guard_defs=[GuardDef(make_service_with_two_effects)],
         )
-        guard_effect_ids = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="m")))[:2]
+        guard_effect_ids = collect_effect_ids(engine.handle(TestCommand(), MessageContext(message_id="m")))[:2]
         message_id = f"m::{Service.__module__}.{Service.__qualname__}"
 
-        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id=message_id)))
+        effect_ids = collect_effect_ids(engine.handle(TestCommand(), MessageContext(message_id=message_id)))
 
         assert set(effect_ids).isdisjoint(guard_effect_ids)
 
@@ -212,6 +212,6 @@ class TestGuards:
             ],
         )
 
-        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
+        effect_ids = collect_effect_ids(engine.handle(TestCommand(), MessageContext(message_id="test_message_id")))
 
         assert len(set(effect_ids)) == 4

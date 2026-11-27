@@ -120,7 +120,7 @@ async def main() -> None:
 
     async with environment:
         print()
-        result = await environment.execute(ConvertCommand(amount=100, currency="EUR"), "convert-1")
+        result = await environment.handle(ConvertCommand(amount=100, currency="EUR"), "convert-1")
         print(f"Result: {result}\n")
 
 

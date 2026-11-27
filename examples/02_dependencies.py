@@ -192,12 +192,12 @@ async def main() -> None:
 
     async with environment:
         print("\n=== Successful rename ===")
-        user = await environment.execute(RenameUserCommand(user_id="u1", name="Bob"), "rename-ok")
+        user = await environment.handle(RenameUserCommand(user_id="u1", name="Bob"), "rename-ok")
         print(f"Result: {user}, stored: {USERS['u1']}")
 
         print("\n=== Failed rename rolls the transaction back ===")
         try:
-            await environment.execute(RenameUserCommand(user_id="u1", name=""), "rename-failed")
+            await environment.handle(RenameUserCommand(user_id="u1", name=""), "rename-failed")
         except ValueError as exc:
             print(f"Error: {exc}, stored: {USERS['u1']}")
         print()

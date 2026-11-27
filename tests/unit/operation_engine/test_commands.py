@@ -18,8 +18,8 @@ from fidem.operation_engine.definitions import (
 )
 from fidem.operation_engine.engine import OperationEngineImpl
 from fidem.operation_engine.errors import (
-    CommandNotDefinedError,
     DuplicateCommandDefError,
+    MessageNotDefinedError,
     UnsupportedAtomicResultError,
     UnsupportedEffectError,
 )
@@ -75,7 +75,7 @@ class TestExecuteEphemeral:
         engine = make_engine(handler)
 
         assert_generator(
-            generator=engine.execute(command, MessageContext(message_id="test_message_id")),
+            generator=engine.handle(command, MessageContext(message_id="test_message_id")),
             return_value="command_result",
         )
         assert calls == [HandlerCall(context=MessageContext(message_id="test_message_id"), command=command)]
@@ -97,7 +97,7 @@ class TestExecuteEphemeral:
         engine = make_engine(handler)
 
         assert_generator(
-            generator=engine.execute(command, MessageContext(message_id="test_message_id")),
+            generator=engine.handle(command, MessageContext(message_id="test_message_id")),
             steps=[YieldStep(make_expected_instruction(effect, command), "effect_result")],
             return_value="command_result effect_result",
         )
@@ -111,7 +111,7 @@ class TestExecuteEphemeral:
         engine = make_engine(handler)
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
+            engine.handle(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert exc_info.value.args == (effect,)
 
@@ -130,7 +130,7 @@ class TestExecuteEphemeral:
         engine = make_engine(handler)
 
         with pytest.raises(UnsupportedEffectError):
-            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
+            engine.handle(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert is_handler_closed
 
@@ -145,7 +145,7 @@ class TestExecuteEphemeral:
 
         is_handler_closed = False
         engine = make_engine(handler)
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan = engine.handle(TestCommand(), MESSAGE_CONTEXT)
         execution_plan.send(None)
 
         execution_plan.close()
@@ -155,23 +155,23 @@ class TestExecuteEphemeral:
     def test_generates_same_effect_ids_for_same_message_id(self) -> None:
         engine = make_engine(handle_with_three_effects)
 
-        effect_ids1 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
-        effect_ids2 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
+        effect_ids1 = collect_effect_ids(engine.handle(TestCommand(), MessageContext(message_id="test_message_id")))
+        effect_ids2 = collect_effect_ids(engine.handle(TestCommand(), MessageContext(message_id="test_message_id")))
 
         assert effect_ids1 == effect_ids2
 
     def test_generates_unique_effect_ids_within_command(self) -> None:
         engine = make_engine(handle_with_three_effects)
 
-        effect_ids = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id")))
+        effect_ids = collect_effect_ids(engine.handle(TestCommand(), MessageContext(message_id="test_message_id")))
 
         assert len(set(effect_ids)) == 3
 
     def test_generates_different_effect_ids_for_different_message_ids(self) -> None:
         engine = make_engine(handle_with_three_effects)
 
-        effect_ids1 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id1")))
-        effect_ids2 = collect_effect_ids(engine.execute(TestCommand(), MessageContext(message_id="test_message_id2")))
+        effect_ids1 = collect_effect_ids(engine.handle(TestCommand(), MessageContext(message_id="test_message_id1")))
+        effect_ids2 = collect_effect_ids(engine.handle(TestCommand(), MessageContext(message_id="test_message_id2")))
 
         assert set(effect_ids1).isdisjoint(effect_ids2)
 
@@ -184,7 +184,7 @@ class TestExecuteEphemeral:
             return "unreachable"
 
         engine = make_engine(handler)
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan = engine.handle(TestCommand(), MESSAGE_CONTEXT)
         execution_plan.send(None)
 
         with pytest.raises(StopIteration) as exc_info:
@@ -194,7 +194,7 @@ class TestExecuteEphemeral:
 
     def test_raises_instruction_error_when_handler_does_not_handle_it(self) -> None:
         engine = make_engine(handle_with_three_effects)
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan = engine.handle(TestCommand(), MESSAGE_CONTEXT)
         execution_plan.send(None)
         effect_error = ValueError("effect_error")
 
@@ -206,8 +206,8 @@ class TestExecuteEphemeral:
     def test_raises_command_not_defined_error_when_command_not_defined(self) -> None:
         engine = OperationEngineImpl(command_defs=[])
 
-        with pytest.raises(CommandNotDefinedError) as exc_info:
-            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
+        with pytest.raises(MessageNotDefinedError) as exc_info:
+            engine.handle(TestCommand(), MESSAGE_CONTEXT).send(None)
 
         assert exc_info.value.args == (TestCommand,)
 
@@ -221,7 +221,7 @@ class TestExecuteEphemeral:
         engine = OperationEngineImpl(command_defs=[command_def])
 
         with pytest.raises(NotImplementedError):
-            engine.execute(TestCommand(), MESSAGE_CONTEXT).send(None)
+            engine.handle(TestCommand(), MESSAGE_CONTEXT).send(None)
 
 
 class TestExecuteAtomic:
@@ -238,7 +238,7 @@ class TestExecuteAtomic:
         read = TestDatabaseReadEffect()
         write = TestDatabaseWriteEffect()
         command = TestCommand()
-        execution_plan = make_engine(handler, command_def_type=AtomicCommandDef).execute(command, MESSAGE_CONTEXT)
+        execution_plan = make_engine(handler, command_def_type=AtomicCommandDef).handle(command, MESSAGE_CONTEXT)
 
         assert_runs_in_transaction(
             instruction=execution_plan.send(None),
@@ -268,7 +268,7 @@ class TestExecuteAtomic:
         command = TestCommand()
 
         assert_generator(
-            generator=make_engine(handler, command_def_type=AtomicCommandDef).execute(command, MESSAGE_CONTEXT),
+            generator=make_engine(handler, command_def_type=AtomicCommandDef).handle(command, MESSAGE_CONTEXT),
             steps=[
                 YieldStep(make_expected_instruction(read, command), "read_result"),
                 YieldStep(make_expected_instruction(write, command), "write_result"),
@@ -297,7 +297,7 @@ class TestExecuteAtomic:
         engine = make_engine(handler, command_def_type=AtomicCommandDef)
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+            run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert exc_info.value.args == (effect,)
 
@@ -328,7 +328,7 @@ class TestExecuteAtomic:
         engine = make_engine(handler, command_def_type=AtomicCommandDef)
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+            run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert exc_info.value.args == (effect,)
 
@@ -348,7 +348,7 @@ class TestExecuteAtomic:
         engine = make_engine(handler, command_def_type=AtomicCommandDef)
 
         with pytest.raises(UnsupportedAtomicResultError) as exc_info:
-            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+            run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert exc_info.value.args == (result,)
 
@@ -368,7 +368,7 @@ class TestExecuteAtomic:
         )
 
         with pytest.raises(UnsupportedAtomicResultError):
-            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+            run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
     def test_throws_effect_error_into_transaction(self) -> None:
         @WriteTransaction
@@ -385,7 +385,7 @@ class TestExecuteAtomic:
 
         engine = make_engine(handler, command_def_type=AtomicCommandDef)
 
-        result = run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT), raise_effect_error)
+        result = run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT), raise_effect_error)
 
         assert result == "effect_error"
 
@@ -404,7 +404,7 @@ class TestExecuteAtomic:
             handler, command_def_type=AtomicCommandDef, middleware_defs=[MessageMiddlewareDef("test", middleware)]
         )
 
-        result = run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT), raise_effect_error)
+        result = run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT), raise_effect_error)
 
         assert result == "effect_error"
 
@@ -430,9 +430,9 @@ class TestExecuteAtomic:
             return (yield from write)
 
         atomic_effect_ids = collect_effect_ids(
-            make_engine(atomic_handler, command_def_type=AtomicCommandDef).execute(TestCommand(), MESSAGE_CONTEXT)
+            make_engine(atomic_handler, command_def_type=AtomicCommandDef).handle(TestCommand(), MESSAGE_CONTEXT)
         )
-        staged_effect_ids = collect_effect_ids(make_engine(staged_handler).execute(TestCommand(), MESSAGE_CONTEXT))
+        staged_effect_ids = collect_effect_ids(make_engine(staged_handler).handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert atomic_effect_ids == staged_effect_ids
 
@@ -452,7 +452,7 @@ class TestExecuteAtomic:
         )
 
         result = run_plan(
-            execution_plan=engine.execute(TestCommand(), MESSAGE_CONTEXT),
+            execution_plan=engine.handle(TestCommand(), MESSAGE_CONTEXT),
             call_effect_handler=lambda instruction: (
                 effect_ids.append(instruction.call.effect_context.effect_id) or "effect_result"
             ),
@@ -477,7 +477,7 @@ class TestExecuteAtomic:
         engine = make_engine(handler, command_def_type=AtomicCommandDef, guard_defs=[GuardDef(service)])
 
         run_plan(
-            execution_plan=engine.execute(TestCommand(), MESSAGE_CONTEXT),
+            execution_plan=engine.handle(TestCommand(), MESSAGE_CONTEXT),
             call_effect_handler=lambda instruction: effect_types.append(type(instruction.call.effect)),
         )
 
