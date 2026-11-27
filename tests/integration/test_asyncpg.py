@@ -162,7 +162,7 @@ class TestTransactions:
         environment = make_environment(pool, command_defs=[AtomicCommandDef("test", TestCommand, handler)])
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result is None
         assert await fetch_values(pool, first_id, second_id) == ["first", "second"]
@@ -182,7 +182,7 @@ class TestTransactions:
 
         async with environment:
             with pytest.raises(ValueError, match="effect_error"):
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
         assert await fetch_values(pool, item_id) == [None]
 
@@ -205,7 +205,7 @@ class TestTransactions:
 
         async with environment:
             with pytest.raises(TransactionRolledBackError):
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
         assert await fetch_values(pool, item_id) == [None]
 
@@ -244,7 +244,7 @@ class TestTransactions:
         )
 
         async with environment:
-            result = await environment.query(TestQuery())
+            result = await environment.handle(TestQuery())
 
         assert result == expected_values
         assert await fetch_values(pool, item_id) == ["changed"]
@@ -262,7 +262,7 @@ class TestTransactions:
 
         async with environment:
             with pytest.raises(ReadOnlySQLTransactionError):
-                await environment.query(TestQuery())
+                await environment.handle(TestQuery())
 
         assert await fetch_values(pool, item_id) == [None]
 
@@ -288,7 +288,7 @@ class TestTransactions:
         environment = make_environment(pool, command_defs=[StagedCommandDef("test", TestCommand, handler)])
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
         assert await fetch_values(pool, first_id, failed_id, second_id) == ["value", None, "value"]
 
@@ -317,7 +317,7 @@ class TestTransactionOptions:
         )
 
         async with environment:
-            result = await environment.query(TestQuery())
+            result = await environment.handle(TestQuery())
 
         assert result == NO_TRANSACTION
 
@@ -374,7 +374,7 @@ class TestTransactionOptions:
         )
 
         async with environment:
-            result = await environment.query(TestQuery())
+            result = await environment.handle(TestQuery())
 
         assert result == expected_state
 
@@ -422,7 +422,7 @@ class TestTransactionOptions:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == TransactionState(in_transaction=True, isolation=expected_isolation, read_only=False)
 
@@ -455,7 +455,7 @@ class TestTransactionOptions:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == TransactionState(in_transaction=True, isolation=expected_isolation, read_only=False)
         assert await fetch_values(pool, item_id) == ["value"]

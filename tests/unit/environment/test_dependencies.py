@@ -45,7 +45,7 @@ class TestEffectHandlerDependencies:
         )
 
         async with environment:
-            await environment.execute(command, "test_message_id")
+            await environment.handle(command, "test_message_id")
 
         assert calls == [
             BuiltinDependencies(
@@ -75,8 +75,8 @@ class TestEffectHandlerDependencies:
         )
 
         async with environment:
-            await environment.execute(TestCommand(), "message1")
-            await environment.execute(TestCommand(), "message2")
+            await environment.handle(TestCommand(), "message1")
+            await environment.handle(TestCommand(), "message2")
 
         assert events == [
             "start message1",
@@ -102,7 +102,7 @@ class TestEffectHandlerDependencies:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
     async def test_closes_message_dependency_with_error_that_failed_message(self) -> None:
         async def resource() -> AsyncGenerator[Resource]:
@@ -115,7 +115,7 @@ class TestEffectHandlerDependencies:
         async def handler(resource: Resource) -> None:
             pass
 
-        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
+        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
             yield make_instruction()
             raise message_error
 
@@ -129,7 +129,7 @@ class TestEffectHandlerDependencies:
 
         async with environment:
             with pytest.raises(ValueError, match="message_error"):
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
         assert errors == [message_error]
 
@@ -150,7 +150,7 @@ class TestEffectHandlerDependencies:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
         assert events == ["start", "handler", "stop", "start", "handler", "stop"]
 
@@ -176,7 +176,7 @@ class TestEffectHandlerDependencies:
 
         async with environment:
             with pytest.raises(ValueError, match="effect_error") as exc_info:
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
         assert exc_info.value is effect_error
         assert errors == [effect_error]
@@ -189,7 +189,7 @@ class TestEffectHandlerDependencies:
         async def handler(resource: Resource) -> str:
             return "effect_result"
 
-        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
+        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
             try:
                 yield make_instruction()
             except ValueError as exc:
@@ -203,7 +203,7 @@ class TestEffectHandlerDependencies:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "closing_error"
 
@@ -244,7 +244,7 @@ class TestEffectHandlerDependencies:
 
         async with environment:
             with pytest.raises(ExceptionGroup) as exc_info:
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
         assert exc_info.value.exceptions == (effect_error, closing_error)
 
@@ -267,7 +267,7 @@ class TestEffectHandlerDependencies:
         async with environment:
             with pytest.raises(TimeoutError):
                 async with timeout(0.01):
-                    await environment.execute(TestCommand())
+                    await environment.handle(TestCommand())
 
     async def test_raises_dependency_not_found_error_when_message_has_other_type(self) -> None:
         class OtherCommand(Command[str]):
@@ -280,7 +280,7 @@ class TestEffectHandlerDependencies:
 
         async with environment:
             with pytest.raises(DependencyNotFoundError) as exc_info:
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
         assert exc_info.value.args == (handler, "message", OtherCommand)
 

@@ -27,11 +27,9 @@ class Config:
 
 def make_operation_engine_mock(
     execution_plan: Callable[..., ExecutionPlan[Any]] | None = None,
-    query_plan: Callable[..., ExecutionPlan[Any]] | None = None,
 ) -> Mock:
     operation_engine_mock = Mock(spec=OperationEngine)
-    operation_engine_mock.execute.side_effect = execution_plan
-    operation_engine_mock.query.side_effect = query_plan
+    operation_engine_mock.handle.side_effect = execution_plan
     return operation_engine_mock
 
 

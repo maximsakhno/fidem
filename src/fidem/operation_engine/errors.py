@@ -3,18 +3,17 @@ from typing import Any
 
 from fidem.effects import Effect
 from fidem.errors import Error
-from fidem.messages import Command, Event, Query
+from fidem.messages import Event, Message
 from fidem.operation_engine.definitions import AnyEventHandlerDef, CommandDef, EventDef, MessageMiddlewareDef, QueryDef
 
 __all__ = [
-    "CommandNotDefinedError",
     "DuplicateCommandDefError",
     "DuplicateEventDefError",
     "DuplicateEventHandlerDefError",
     "DuplicateMessageMiddlewareDefError",
     "DuplicateQueryDefError",
     "EventNotDefinedError",
-    "QueryNotDefinedError",
+    "MessageNotDefinedError",
     "UnsupportedAtomicResultError",
     "UnsupportedEffectError",
 ]
@@ -47,14 +46,11 @@ class DuplicateMessageMiddlewareDefError(Error):
         super().__init__(middleware_defs)
 
 
-class CommandNotDefinedError(Error):
-    def __init__(self, command_type: type[Command[Any]]) -> None:
-        super().__init__(command_type)
+class MessageNotDefinedError(Error):
+    """No command or query of the type is declared."""
 
-
-class QueryNotDefinedError(Error):
-    def __init__(self, query_type: type[Query[Any]]) -> None:
-        super().__init__(query_type)
+    def __init__(self, message_type: type[Message[Any]]) -> None:
+        super().__init__(message_type)
 
 
 class EventNotDefinedError(Error):

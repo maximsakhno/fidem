@@ -8,12 +8,7 @@ from fidem.guards import GuardDef
 from fidem.messages import MessageContext, QueryEffect, QueryEffectful
 from fidem.operation_engine.definitions import MessageMiddlewareDef, MessageMiddlewareEffectful, Proceed, QueryDef
 from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.operation_engine.errors import (
-    CommandNotDefinedError,
-    DuplicateQueryDefError,
-    QueryNotDefinedError,
-    UnsupportedEffectError,
-)
+from fidem.operation_engine.errors import DuplicateQueryDefError, MessageNotDefinedError, UnsupportedEffectError
 from fidem.testing import YieldStep, assert_generator
 from tests.effects import TestControlEffect, TestDatabaseWriteEffect, TestExternalReadEffect, TestExternalWriteEffect
 from tests.ids import type_name
@@ -51,7 +46,7 @@ class TestExecuteQuery:
         engine = make_query_engine(handler, guard_defs=[GuardDef(service)])
 
         assert_generator(
-            generator=engine.query(query, MESSAGE_CONTEXT),
+            generator=engine.handle(query, MESSAGE_CONTEXT),
             steps=[YieldStep(make_expected_instruction(read, query), "effect_result")],
             return_value="query_result effect_result",
         )
@@ -80,7 +75,7 @@ class TestExecuteQuery:
         engine = make_query_engine(handler)
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            run_plan(engine.query(TestQuery(), MESSAGE_CONTEXT))
+            run_plan(engine.handle(TestQuery(), MESSAGE_CONTEXT))
 
         assert exc_info.value.args == (effect,)
 
@@ -109,7 +104,7 @@ class TestExecuteQuery:
             query_middleware_defs=query_middleware_defs,
         )
 
-        assert run(engine.query(TestQuery(), MESSAGE_CONTEXT)) == expected_result
+        assert run(engine.handle(TestQuery(), MESSAGE_CONTEXT)) == expected_result
 
     def test_lets_middleware_yield_write_effects(self) -> None:
         def middleware() -> MessageMiddlewareEffectful[object]:
@@ -126,7 +121,7 @@ class TestExecuteQuery:
         engine = make_query_engine(handler, middleware_defs=[MessageMiddlewareDef("cache", middleware)])
 
         result = run_plan(
-            execution_plan=engine.query(TestQuery(), MESSAGE_CONTEXT),
+            execution_plan=engine.handle(TestQuery(), MESSAGE_CONTEXT),
             call_effect_handler=lambda instruction: effect_types.append(type(instruction.call.effect)),
         )
 
@@ -139,16 +134,10 @@ class TestExecuteQuery:
 
         engine = make_query_engine(handle_query)
 
-        with pytest.raises(QueryNotDefinedError) as exc_info:
-            engine.query(OtherQuery(), MESSAGE_CONTEXT).send(None)
+        with pytest.raises(MessageNotDefinedError) as exc_info:
+            engine.handle(OtherQuery(), MESSAGE_CONTEXT).send(None)
 
         assert exc_info.value.args == (OtherQuery,)
-
-    def test_does_not_execute_query_as_command(self) -> None:
-        engine = make_query_engine(handle_query)
-
-        with pytest.raises(CommandNotDefinedError):
-            engine.execute(TestQuery(), MESSAGE_CONTEXT).send(None)  # pyright: ignore[reportArgumentType] - checks a query passed as a command
 
     def test_raises_duplicate_query_def_error_when_define_queries_with_same_type(self) -> None:
         query_defs = [QueryDef("first", TestQuery, handle_query), QueryDef("second", TestQuery, handle_query)]

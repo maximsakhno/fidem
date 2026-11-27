@@ -45,7 +45,7 @@ class TestTransactions:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "effect_result effect_result"
         assert events == ["begin read_only=False", "commit"]
@@ -64,7 +64,7 @@ class TestTransactions:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "effect_error"
         assert events == ["begin read_only=False", "rollback"]
@@ -81,7 +81,7 @@ class TestTransactions:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "commit_error"
 
@@ -97,7 +97,7 @@ class TestTransactions:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "effect_result"
         assert events == []
@@ -118,7 +118,7 @@ class TestTransactions:
         )
 
         async with environment:
-            task = create_task(environment.execute(TestCommand()))
+            task = create_task(environment.handle(TestCommand()))
             await started.wait()
             task.cancel()
             with pytest.raises(CancelledError):
@@ -138,7 +138,7 @@ class TestTransactions:
 
         async with environment:
             with pytest.raises(NotImplementedError):
-                await environment.execute(TestCommand())
+                await environment.handle(TestCommand())
 
     async def test_runs_each_database_effect_outside_transaction_in_its_own_transaction(self) -> None:
         def command_handler() -> StagedEffectful[str]:
@@ -155,7 +155,7 @@ class TestTransactions:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
         assert events == ["begin read_only=True", "commit", "begin read_only=False", "commit"]
         assert connections[0] is not connections[1]
@@ -186,7 +186,7 @@ class TestTransactions:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "effect_result"
         assert events == ["begin read_only=False", "commit"]
@@ -212,7 +212,7 @@ class TestTransactions:
         )
 
         async with environment:
-            result = await environment.execute(TestCommand())
+            result = await environment.handle(TestCommand())
 
         assert result == "effect_result effect_result effect_result"
         assert events == ["begin read_only=True", "commit", "begin read_only=False", "commit"]
@@ -224,7 +224,7 @@ class TestTransactions:
             transaction_contexts.append(transaction_context)
             yield Connection()
 
-        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
+        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
             yield RunTransactionInstruction(transaction=read_transaction, plan=read_plan())
             yield RunTransactionInstruction(transaction=write_transaction, plan=write_plan())
             return "command_result"
@@ -237,7 +237,7 @@ class TestTransactions:
         )
 
         async with environment:
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
         assert transaction_contexts == [
             TransactionContext(transaction=read_transaction),
@@ -264,7 +264,7 @@ class TestTransactions:
     def _in_transaction(plan: Callable[[], ExecutionPlan[object]]) -> Callable[..., ExecutionPlan[object]]:
         """Makes an execution plan that runs the plan in a transaction and returns its result or error."""
 
-        def execution_plan(command: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
+        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
             try:
                 return (yield RunTransactionInstruction(transaction=write_transaction, plan=plan()))
             except ValueError as exc:

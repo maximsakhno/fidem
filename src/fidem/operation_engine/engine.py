@@ -33,14 +33,13 @@ from fidem.operation_engine.definitions import (
     StagedEventHandlerDef,
 )
 from fidem.operation_engine.errors import (
-    CommandNotDefinedError,
     DuplicateCommandDefError,
     DuplicateEventDefError,
     DuplicateEventHandlerDefError,
     DuplicateMessageMiddlewareDefError,
     DuplicateQueryDefError,
     EventNotDefinedError,
-    QueryNotDefinedError,
+    MessageNotDefinedError,
     UnsupportedAtomicResultError,
     UnsupportedEffectError,
 )
@@ -237,16 +236,12 @@ class OperationEngineImpl(OperationEngine):
                 *(event_def.event_type for event_def in event_defs),
             ),
         )
-        self._type_to_command: Mapping[type[Message[Any]], _PreparedMessage[CommandDef[Any]]] = {
-            command_type: self._prepare_message(command_type, command_def, middleware_defs)
-            for command_type, command_def in type_to_command_def.items()
-        }
-        self._type_to_query: Mapping[type[Message[Any]], _PreparedMessage[QueryDef[Any]]] = {
-            query_type: self._prepare_message(query_type, query_def, middleware_defs)
-            for query_type, query_def in type_to_query_def.items()
-        }
         self._type_to_event: Mapping[type[Message[Any]], _PreparedEvent] = {
             event_def.event_type: self._prepare_event(event_def, middleware_defs) for event_def in event_defs
+        }
+        self._type_to_message: Mapping[type[Message[Any]], _PreparedMessage[CommandDef[Any] | QueryDef[Any]]] = {
+            message_type: self._prepare_message(message_type, message_def, middleware_defs)
+            for message_type, message_def in (*type_to_command_def.items(), *type_to_query_def.items())
         }
 
     @staticmethod
@@ -319,37 +314,20 @@ class OperationEngineImpl(OperationEngine):
             return f":{key.name}:{dependency_type.__module__}.{dependency_type.__qualname__}"
         return f":{key.name}:{dependency_type!r}"
 
-    def execute[ResultT](
+    def handle[ResultT](
         self,
-        command: Command[ResultT],
+        message: Command[ResultT] | Query[ResultT],
         message_context: MessageContext,
     ) -> ExecutionPlan[ResultT]:
-        prepared_command = self._type_to_command.get(type(command))
-        if prepared_command is None:
-            raise CommandNotDefinedError(type(command))
-        execution_mode = prepared_command.message_def.execution_mode
-        if execution_mode != ExecutionMode.EPHEMERAL:
-            raise NotImplementedError(f"Execution mode {execution_mode} is not implemented yet")
-        return (yield from self._execute(prepared_command, command, message_context))
-
-    def query[ResultT](
-        self,
-        query: Query[ResultT],
-        message_context: MessageContext,
-    ) -> ExecutionPlan[ResultT]:
-        prepared_query = self._type_to_query.get(type(query))
-        if prepared_query is None:
-            raise QueryNotDefinedError(type(query))
-        return (yield from self._execute(prepared_query, query, message_context))
-
-    def _execute[MessageDefT: _AnyMessageDef](
-        self,
-        prepared_message: _PreparedMessage[MessageDefT],
-        message: Message[Any],
-        message_context: MessageContext,
-    ) -> ExecutionPlan[Any]:
+        prepared_message = self._type_to_message.get(type(message))
+        if prepared_message is None:
+            raise MessageNotDefinedError(type(message))
+        message_def = prepared_message.message_def
+        if not isinstance(message_def, QueryDef) and message_def.execution_mode != ExecutionMode.EPHEMERAL:
+            raise NotImplementedError(f"Execution mode {message_def.execution_mode} is not implemented yet")
+        execution = self._make_execution(message, message_context)
         try:
-            return (yield from _run_chain(prepared_message, self._make_execution(message, message_context)))
+            return (yield from _run_chain(prepared_message, execution))
         except _EngineError as exc:
             raise exc.error.with_traceback(exc.__traceback__) from None
 

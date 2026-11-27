@@ -64,19 +64,12 @@ class EffectDef[EffectT: Effect[Any]]:
 
 class Environment(AbstractAsyncContextManager["Environment", None], ABC):
     @abstractmethod
-    async def execute[ResultT](
+    async def handle[ResultT](
         self,
-        command: Command[ResultT],
+        message: Command[ResultT] | Query[ResultT],
         message_id: MessageId | None = None,
     ) -> ResultT:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def query[ResultT](
-        self,
-        query: Query[ResultT],
-        message_id: MessageId | None = None,
-    ) -> ResultT:
+        """Runs the operation of the command or the query and returns its result."""
         raise NotImplementedError
 
 
@@ -172,28 +165,16 @@ class EnvironmentImpl(Environment):
             raise EnvironmentNotStartedError
         return self._application_scope
 
-    async def execute[ResultT](
+    async def handle[ResultT](
         self,
-        command: Command[ResultT],
+        message: Command[ResultT] | Query[ResultT],
         message_id: MessageId | None = None,
     ) -> ResultT:
         message_context = self._make_message_context(message_id)
         return await self._run_message(
-            message=command,
+            message=message,
             message_context=message_context,
-            execution_plan=self._operation_engine.execute(command=command, message_context=message_context),
-        )
-
-    async def query[ResultT](
-        self,
-        query: Query[ResultT],
-        message_id: MessageId | None = None,
-    ) -> ResultT:
-        message_context = self._make_message_context(message_id)
-        return await self._run_message(
-            message=query,
-            message_context=message_context,
-            execution_plan=self._operation_engine.query(query=query, message_context=message_context),
+            execution_plan=self._operation_engine.handle(message=message, message_context=message_context),
         )
 
     @staticmethod

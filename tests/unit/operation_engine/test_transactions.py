@@ -61,7 +61,7 @@ class TestTransactions:
             return f"command_result {effect_result}"
 
         command = TestCommand()
-        execution_plan = make_engine(handler).execute(command, MESSAGE_CONTEXT)
+        execution_plan = make_engine(handler).handle(command, MESSAGE_CONTEXT)
 
         assert_runs_in_transaction(
             instruction=execution_plan.send(None),
@@ -86,7 +86,7 @@ class TestTransactions:
         first_read = TestDatabaseReadEffect()
         second_read = TestDatabaseReadEffect()
         query = TestQuery()
-        execution_plan = make_query_engine(handler).query(query, MESSAGE_CONTEXT)
+        execution_plan = make_query_engine(handler).handle(query, MESSAGE_CONTEXT)
 
         instruction = execution_plan.send(None)
         assert isinstance(instruction, RunTransactionInstruction)
@@ -128,7 +128,7 @@ class TestTransactions:
             command_def_type=AtomicCommandDef if handler_kind == "atomic" else StagedCommandDef,
         )
 
-        run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT), on_transaction=transactions.append)
+        run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT), on_transaction=transactions.append)
 
         expected_transactions = (
             [read_transaction, write_transaction] if handler_kind == "atomic" else [read_transaction]
@@ -146,7 +146,7 @@ class TestTransactions:
         effect_types: MutableSequence[type[Effect[Any]]] = []
 
         result = run_plan(
-            execution_plan=make_engine(handler).execute(TestCommand(), MESSAGE_CONTEXT),
+            execution_plan=make_engine(handler).handle(TestCommand(), MESSAGE_CONTEXT),
             call_effect_handler=lambda instruction: (
                 effect_types.append(type(instruction.call.effect)) or "effect_result"
             ),
@@ -165,7 +165,7 @@ class TestTransactions:
             return f"{first_result} {second_result}"
 
         result = run_plan(
-            execution_plan=make_engine(handler).execute(TestCommand(), MESSAGE_CONTEXT),
+            execution_plan=make_engine(handler).handle(TestCommand(), MESSAGE_CONTEXT),
             call_effect_handler=lambda instruction: "effect_result",
         )
 
@@ -195,7 +195,7 @@ class TestTransactions:
             return (yield from transaction())
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            run_plan(make_engine(handler).execute(TestCommand(), MESSAGE_CONTEXT))
+            run_plan(make_engine(handler).handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert exc_info.value.args == (effect,)
 
@@ -207,7 +207,7 @@ class TestTransactions:
                 return f"caught {exc}"
             return "unreachable"
 
-        execution_plan = make_engine(handler).execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan = make_engine(handler).handle(TestCommand(), MESSAGE_CONTEXT)
         assert isinstance(execution_plan.send(None), RunTransactionInstruction)
 
         with pytest.raises(StopIteration) as exc_info:
@@ -227,7 +227,7 @@ class TestTransactions:
                 return "caught"
             return "unreachable"
 
-        result = run_plan(make_engine(handler).execute(TestCommand(), MESSAGE_CONTEXT))
+        result = run_plan(make_engine(handler).handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert result == "caught"
 
@@ -249,9 +249,9 @@ class TestTransactions:
             return (yield from TestInternalEffect())
 
         transaction_effect_ids = collect_effect_ids(
-            make_engine(transaction_handler).execute(TestCommand(), MESSAGE_CONTEXT)
+            make_engine(transaction_handler).handle(TestCommand(), MESSAGE_CONTEXT)
         )
-        plain_effect_ids = collect_effect_ids(make_engine(plain_handler).execute(TestCommand(), MESSAGE_CONTEXT))
+        plain_effect_ids = collect_effect_ids(make_engine(plain_handler).handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert transaction_effect_ids == plain_effect_ids
 

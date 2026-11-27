@@ -42,7 +42,7 @@ class TestLifecycle:
         environment = EnvironmentImpl(operation_engine=make_operation_engine_mock(GeneratorFunctionStub()))
 
         with pytest.raises(EnvironmentNotStartedError):
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
     async def test_raises_environment_not_started_error_when_executes_after_stop(self) -> None:
         environment = EnvironmentImpl(operation_engine=make_operation_engine_mock(GeneratorFunctionStub()))
@@ -50,7 +50,7 @@ class TestLifecycle:
             pass
 
         with pytest.raises(EnvironmentNotStartedError):
-            await environment.execute(TestCommand())
+            await environment.handle(TestCommand())
 
     async def test_raises_environment_not_started_error_when_stops_before_start(self) -> None:
         environment = EnvironmentImpl(operation_engine=make_operation_engine_mock())

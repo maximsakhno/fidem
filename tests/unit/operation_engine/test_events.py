@@ -22,6 +22,7 @@ from fidem.operation_engine.errors import (
     DuplicateEventDefError,
     DuplicateEventHandlerDefError,
     EventNotDefinedError,
+    MessageNotDefinedError,
     UnsupportedEffectError,
 )
 from fidem.operation_engine.instructions import CallEffectHandlerInstruction, ExecutionPlan, RunTransactionInstruction
@@ -126,7 +127,7 @@ def plan_publishing(event: Event) -> ExecutionPlan[Any]:
     def handler() -> StagedEffectful[None, Event]:
         yield from event
 
-    return make_engine(handler, event_defs=EVENT_DEFS).execute(TestCommand(), MESSAGE_CONTEXT)
+    return make_engine(handler, event_defs=EVENT_DEFS).handle(TestCommand(), MESSAGE_CONTEXT)
 
 
 def retry_once() -> MessageMiddlewareEffectful[object]:
@@ -144,7 +145,7 @@ class TestEvents:
 
         event = TestEvent()
         engine = make_engine(handler, command_def_type=AtomicCommandDef, event_defs=EVENT_DEFS)
-        execution_plan = engine.execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan = engine.handle(TestCommand(), MESSAGE_CONTEXT)
 
         instruction = execution_plan.send(None)
         assert isinstance(instruction, RunTransactionInstruction)
@@ -190,8 +191,8 @@ class TestEvents:
             yield from TestInternalEffect()
             yield from TestInternalEffect()
 
-        effects = collect_effects(make_engine(handler, event_defs=EVENT_DEFS).execute(TestCommand(), MESSAGE_CONTEXT))
-        plain_effect_ids = collect_effect_ids(make_engine(plain_handler).execute(TestCommand(), MESSAGE_CONTEXT))
+        effects = collect_effects(make_engine(handler, event_defs=EVENT_DEFS).handle(TestCommand(), MESSAGE_CONTEXT))
+        plain_effect_ids = collect_effect_ids(make_engine(plain_handler).handle(TestCommand(), MESSAGE_CONTEXT))
 
         outbox_effect = effects[2].call.effect
         assert isinstance(outbox_effect, WriteOutboxEffect)
@@ -222,7 +223,7 @@ class TestEvents:
         second = TestEvent()
         engine = make_engine(handler, command_def_type=AtomicCommandDef, event_defs=EVENT_DEFS)
 
-        effects = collect_effects(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+        effects = collect_effects(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert len(effects) == 1
         assert isinstance(effects[0].call.effect, WriteOutboxEffect)
@@ -239,7 +240,7 @@ class TestEvents:
     ) -> None:
         engine = make_engine(handler, command_def_type=command_def_type, event_defs=EVENT_DEFS)
 
-        effects = collect_effects(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+        effects = collect_effects(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert not any(isinstance(effect.call.effect, WriteOutboxEffect) for effect in effects)
 
@@ -251,7 +252,7 @@ class TestEvents:
 
         first = TestEvent()
         second = TestEvent()
-        execution_plan = make_engine(handler, event_defs=EVENT_DEFS).execute(TestCommand(), MESSAGE_CONTEXT)
+        execution_plan = make_engine(handler, event_defs=EVENT_DEFS).handle(TestCommand(), MESSAGE_CONTEXT)
 
         instruction = execution_plan.send(None)
         assert isinstance(instruction, RunTransactionInstruction)
@@ -290,7 +291,7 @@ class TestEvents:
             event_defs=EVENT_DEFS,
         )
 
-        effects = collect_effects(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+        effects = collect_effects(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert len(effects) == 1
         assert isinstance(effects[0].call.effect, WriteOutboxEffect)
@@ -320,7 +321,7 @@ class TestEvents:
             event_defs=EVENT_DEFS,
         )
 
-        result = run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT), write_outbox_once)
+        result = run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT), write_outbox_once)
 
         assert result == "effect_result"
         assert len(outbox_effects) == 2
@@ -338,7 +339,7 @@ class TestEvents:
         engine = make_engine(handler, command_def_type=command_def_type, event_defs=EVENT_DEFS)
 
         with pytest.raises(EventNotDefinedError) as exc_info:
-            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+            run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert exc_info.value.args == (UndefinedEvent,)
 
@@ -355,9 +356,19 @@ class TestEvents:
         )
 
         with pytest.raises(UnsupportedEffectError) as exc_info:
-            run_plan(engine.execute(TestCommand(), MESSAGE_CONTEXT))
+            run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert exc_info.value.args == (event,)
+
+
+class TestHandleEvent:
+    def test_raises_message_not_defined_error_when_handles_event(self) -> None:
+        engine = make_engine(handle_without_effects, event_defs=EVENT_DEFS)
+
+        with pytest.raises(MessageNotDefinedError) as exc_info:
+            engine.handle(TestEvent(), MESSAGE_CONTEXT).send(None)  # pyright: ignore[reportArgumentType] - checks what the type forbids
+
+        assert exc_info.value.args == (TestEvent,)
 
 
 class TestEventDefinition:

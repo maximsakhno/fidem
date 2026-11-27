@@ -52,17 +52,10 @@ class RunTransactionInstruction[ResultT](Instruction[ResultT]):
 
 class OperationEngine(ABC):
     @abstractmethod
-    def execute[ResultT](
+    def handle[ResultT](
         self,
-        command: Command[ResultT],
+        message: Command[ResultT] | Query[ResultT],
         message_context: MessageContext,
     ) -> ExecutionPlan[ResultT]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def query[ResultT](
-        self,
-        query: Query[ResultT],
-        message_context: MessageContext,
-    ) -> ExecutionPlan[ResultT]:
+        """Plans the operation of the command or the query."""
         raise NotImplementedError

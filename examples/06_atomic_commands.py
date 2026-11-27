@@ -183,25 +183,25 @@ async def main() -> None:
 
     async with environment:
         print("\n=== Transfer commits both balances and the transfer together ===")
-        result = await environment.execute(TransferCommand("alice", "bob", Decimal(30)), "transfer-1")
+        result = await environment.handle(TransferCommand("alice", "bob", Decimal(30)), "transfer-1")
         print(f"Result: {result}")
 
         print("\n=== A retry with the same message id does not move the money again ===")
-        result = await environment.execute(TransferCommand("alice", "bob", Decimal(30)), "transfer-1")
+        result = await environment.handle(TransferCommand("alice", "bob", Decimal(30)), "transfer-1")
         print(f"Result: {result}")
 
         print("\n=== Insufficient funds stop the command before the transaction ===")
         try:
-            await environment.execute(TransferCommand("alice", "bob", Decimal(1000)))
+            await environment.handle(TransferCommand("alice", "bob", Decimal(1000)))
         except InsufficientFundsError as exc:
             print(f"Error: insufficient funds on {exc}")
 
         print("\n=== A failed write rolls back the whole transaction ===")
         try:
-            await environment.execute(TransferCommand("alice", "carol", Decimal(10)))
+            await environment.handle(TransferCommand("alice", "carol", Decimal(10)))
         except AccountNotFoundError as exc:
             print(f"Error: account {exc} not found")
-        alice = await environment.query(GetAccountQuery("alice"))
+        alice = await environment.handle(GetAccountQuery("alice"))
         print(f"Alice still has {alice.balance}")
         print()
 

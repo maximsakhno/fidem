@@ -196,10 +196,10 @@ async def main() -> None:
 
     async def transfer_to_bob() -> None:
         for _ in range(5):
-            await environment.execute(TransferCommand("alice", "bob", Decimal(10)))
+            await environment.handle(TransferCommand("alice", "bob", Decimal(10)))
 
     async def read_statements_of_bob() -> Sequence[Statement]:
-        return [await environment.query(GetStatementQuery("bob")) for _ in range(5)]
+        return [await environment.handle(GetStatementQuery("bob")) for _ in range(5)]
 
     async with environment:
         print("\n=== Statements read while transfers run always add up ===")
@@ -210,7 +210,7 @@ async def main() -> None:
 
         print("\n=== Insufficient funds stop the transfer inside the transaction ===")
         try:
-            await environment.execute(TransferCommand("alice", "bob", Decimal(1000)))
+            await environment.handle(TransferCommand("alice", "bob", Decimal(1000)))
         except InsufficientFundsError as exc:
             print(f"Error: insufficient funds on {exc}")
         print()

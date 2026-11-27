@@ -140,18 +140,18 @@ async def main() -> None:
 
     async with environment:
         print("\n=== Admin renames a user ===")
-        user = await environment.execute(RenameUserCommand(token="u1:secret", user_id="u2", name="Robert"))
+        user = await environment.handle(RenameUserCommand(token="u1:secret", user_id="u2", name="Robert"))
         print(f"Result: {user}")
 
         print("\n=== Not an admin ===")
         try:
-            await environment.execute(RenameUserCommand(token="u2:secret", user_id="u1", name="Alicia"))
+            await environment.handle(RenameUserCommand(token="u2:secret", user_id="u1", name="Alicia"))
         except PermissionDeniedError as exc:
             print(f"Error: {exc}")
 
         print("\n=== Invalid token ===")
         try:
-            await environment.execute(RenameUserCommand(token="u1:wrong", user_id="u2", name="Bobby"))
+            await environment.handle(RenameUserCommand(token="u1:wrong", user_id="u2", name="Bobby"))
         except AuthenticationError as exc:
             print(f"Error: {exc}")
         print()
