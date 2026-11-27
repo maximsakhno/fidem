@@ -1,6 +1,6 @@
 import asyncio
 from asyncio import Barrier, CancelledError, sleep, timeout
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Collection, MutableSequence, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Collection, MutableSequence
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
@@ -30,6 +30,7 @@ from fidem.di.effects import (
     EffectDependencyLifetime,
     EffectProvider,
     Scope,
+    Scopes,
     TransactionDependencyAccessError,
 )
 from fidem.effects import Effect, EffectContext
@@ -666,7 +667,12 @@ class TestEffectHandlerResolution:
         scopes = make_scopes(TestInternalEffect())
 
         await prepared_handler.resolve(scopes)
-        await prepared_handler.resolve([*scopes[:2], *make_scopes(TestInternalEffect())[2:]])
+        await prepared_handler.resolve(
+            {
+                **make_scopes(TestInternalEffect()),
+                EffectDependencyLifetime.MESSAGE: scopes[EffectDependencyLifetime.MESSAGE],
+            },
+        )
 
         assert events == ["service"]
 
@@ -686,7 +692,13 @@ class TestEffectHandlerResolution:
         scopes = make_scopes(TestDatabaseWriteEffect())
 
         await prepared_handler.resolve(scopes)
-        await prepared_handler.resolve([*scopes[:3], *make_scopes(TestDatabaseWriteEffect())[3:]])
+        await prepared_handler.resolve(
+            {
+                **make_scopes(TestDatabaseWriteEffect()),
+                EffectDependencyLifetime.MESSAGE: scopes[EffectDependencyLifetime.MESSAGE],
+                EffectDependencyLifetime.TRANSACTION: scopes[EffectDependencyLifetime.TRANSACTION],
+            },
+        )
 
         assert events == ["service"]
 
@@ -941,13 +953,13 @@ EFFECT_CONTEXT = EffectContext(effect_id="test_effect_id")
 TRANSACTION_CONTEXT = TransactionContext(transaction=IMPLICIT_WRITE_TRANSACTION)
 
 
-def make_scopes(effect: Effect[Any], application_scope: Scope | None = None) -> Sequence[Scope]:
-    return (
-        application_scope or Scope({}),
-        EffectDependencyContainer.make_message_scope(MESSAGE, MESSAGE_CONTEXT),
-        EffectDependencyContainer.make_transaction_scope(TRANSACTION_CONTEXT),
-        EffectDependencyContainer.make_effect_scope(effect, EFFECT_CONTEXT),
-    )
+def make_scopes(effect: Effect[Any], application_scope: Scope | None = None) -> Scopes:
+    return {
+        EffectDependencyLifetime.APPLICATION: application_scope or Scope({}),
+        EffectDependencyLifetime.MESSAGE: EffectDependencyContainer.make_message_scope(MESSAGE, MESSAGE_CONTEXT),
+        EffectDependencyLifetime.TRANSACTION: EffectDependencyContainer.make_transaction_scope(TRANSACTION_CONTEXT),
+        EffectDependencyLifetime.EFFECT: EffectDependencyContainer.make_effect_scope(effect, EFFECT_CONTEXT),
+    }
 
 
 async def run_handler(
@@ -959,9 +971,12 @@ async def run_handler(
     container = EffectDependencyContainer(dependency_defs=dependency_defs, effect_types=[type(effect)])
     prepared_handler = container.prepare_effect_handler(type(effect), handler, in_transaction=True)
     application_scope = await container.start()
-    application_scope, message_scope, transaction_scope, effect_scope = make_scopes(effect, application_scope)
-    async with message_scope, transaction_scope, effect_scope:
-        scopes = (application_scope, message_scope, transaction_scope, effect_scope)
+    scopes = make_scopes(effect, application_scope)
+    async with (
+        scopes[EffectDependencyLifetime.MESSAGE],
+        scopes[EffectDependencyLifetime.TRANSACTION],
+        scopes[EffectDependencyLifetime.EFFECT],
+    ):
         await prepared_handler.resolve(scopes)
         result = await prepared_handler.call(scopes)
     await container.stop(application_scope, None)
@@ -973,8 +988,7 @@ async def add_dependency(
     factory: DependencyFactory[Service],
     key: DependencyKey = EFFECT_KEY,
 ) -> None:
-    context_manager = EffectProvider.make(EffectDependencyDef(factory)).factory()
-    await scope.add(key, await context_manager.__aenter__(), context_manager)
+    await scope.enter(key, EffectProvider.make(EffectDependencyDef(factory)).factory)
 
 
 def make_recording_factory(events: MutableSequence[str], name: str) -> DependencyFactory[Service]:
