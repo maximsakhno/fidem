@@ -212,10 +212,11 @@ class TestTransactions:
     @pytest.mark.parametrize(
         argnames=("connection_def", "expected_values"),
         argvalues=[
-            (AsyncpgConnectionDef(), ["initial", "initial"]),
-            (
+            pytest.param(AsyncpgConnectionDef(), ["initial", "initial"], id="default_repeatable_read"),
+            pytest.param(
                 AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="read_committed")),
                 ["initial", "changed"],
+                id="read_committed",
             ),
         ],
     )
@@ -296,8 +297,11 @@ class TestTransactionOptions:
     @pytest.mark.parametrize(
         argnames="connection_def",
         argvalues=[
-            AsyncpgConnectionDef(),
-            AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="serializable")),
+            pytest.param(AsyncpgConnectionDef(), id="default"),
+            pytest.param(
+                AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="serializable")),
+                id="serializable_read_options",
+            ),
         ],
     )
     async def test_runs_read_effect_outside_transaction_without_database_transaction(
@@ -320,31 +324,40 @@ class TestTransactionOptions:
     @pytest.mark.parametrize(
         argnames=("connection_def", "expected_state"),
         argvalues=[
-            (
+            pytest.param(
                 AsyncpgConnectionDef(),
                 TransactionState(in_transaction=True, isolation="repeatable read", read_only=True),
+                id="default_repeatable_read",
             ),
-            (
+            pytest.param(
                 AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="serializable")),
                 TransactionState(in_transaction=True, isolation="serializable", read_only=True),
+                id="read_options",
             ),
-            (AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="read_committed")), NO_TRANSACTION),
-            (
+            pytest.param(
+                AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="read_committed")),
+                NO_TRANSACTION,
+                id="read_committed_without_transaction",
+            ),
+            pytest.param(
                 AsyncpgConnectionDef(write_options=AsyncpgTransactionOptions(isolation="serializable")),
                 TransactionState(in_transaction=True, isolation="repeatable read", read_only=True),
+                id="write_options_ignored",
             ),
-            (
+            pytest.param(
                 AsyncpgConnectionDef(
                     read_options=AsyncpgTransactionOptions(isolation="repeatable_read"),
                     transaction_options={read_state: AsyncpgTransactionOptions(isolation="serializable")},
                 ),
                 TransactionState(in_transaction=True, isolation="serializable", read_only=True),
+                id="transaction_options",
             ),
-            (
+            pytest.param(
                 AsyncpgConnectionDef(
                     transaction_options={read_other_state: AsyncpgTransactionOptions(isolation="serializable")},
                 ),
                 TransactionState(in_transaction=True, isolation="repeatable read", read_only=True),
+                id="other_transaction_options_ignored",
             ),
         ],
     )
@@ -368,24 +381,31 @@ class TestTransactionOptions:
     @pytest.mark.parametrize(
         argnames=("connection_def", "expected_isolation"),
         argvalues=[
-            (AsyncpgConnectionDef(), "read committed"),
-            (
+            pytest.param(AsyncpgConnectionDef(), "read committed", id="default_read_committed"),
+            pytest.param(
                 AsyncpgConnectionDef(write_options=AsyncpgTransactionOptions(isolation="repeatable_read")),
                 "repeatable read",
+                id="write_options",
             ),
-            (AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="serializable")), "read committed"),
-            (
+            pytest.param(
+                AsyncpgConnectionDef(read_options=AsyncpgTransactionOptions(isolation="serializable")),
+                "read committed",
+                id="read_options_ignored",
+            ),
+            pytest.param(
                 AsyncpgConnectionDef(
                     write_options=AsyncpgTransactionOptions(isolation="repeatable_read"),
                     transaction_options={write_state: AsyncpgTransactionOptions(isolation="serializable")},
                 ),
                 "serializable",
+                id="transaction_options",
             ),
-            (
+            pytest.param(
                 AsyncpgConnectionDef(
                     transaction_options={write_other_state: AsyncpgTransactionOptions(isolation="serializable")},
                 ),
                 "read committed",
+                id="other_transaction_options_ignored",
             ),
         ],
     )
@@ -409,8 +429,12 @@ class TestTransactionOptions:
     @pytest.mark.parametrize(
         argnames=("connection_def", "expected_isolation"),
         argvalues=[
-            (AsyncpgConnectionDef(), "read committed"),
-            (AsyncpgConnectionDef(write_options=AsyncpgTransactionOptions(isolation="serializable")), "serializable"),
+            pytest.param(AsyncpgConnectionDef(), "read committed", id="default_read_committed"),
+            pytest.param(
+                AsyncpgConnectionDef(write_options=AsyncpgTransactionOptions(isolation="serializable")),
+                "serializable",
+                id="write_options",
+            ),
         ],
     )
     async def test_runs_write_effect_outside_transaction_with_write_options(
