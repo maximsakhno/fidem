@@ -205,8 +205,9 @@ class DependencyGraph[ProviderT: Provider]:
             key: self._bind_parameters(key, provider.parameters, index) for key, provider in self.providers.items()
         }
         """Arguments of each provider bound to any subject type."""
-        self.graph: Final[Mapping[DependencyKey, Collection[DependencyKey]]] = self._make_graph(self.arguments)
-        self.order: Final[Sequence[DependencyKey]] = self.sort(self.graph)
+        self.dependencies: Final[Mapping[DependencyKey, Collection[DependencyKey]]] = self._make_graph(self.arguments)
+        """Providers each provider depends on."""
+        self.order: Final[Sequence[DependencyKey]] = self._sort(self.dependencies)
         """Providers, each one after its dependencies."""
 
     def _make_key_to_provider(self, providers: Collection[ProviderT]) -> Mapping[DependencyKey, ProviderT]:
@@ -314,7 +315,7 @@ class DependencyGraph[ProviderT: Provider]:
         }
 
     @staticmethod
-    def sort(graph: Mapping[DependencyKey, Collection[DependencyKey]]) -> Sequence[DependencyKey]:
+    def _sort(graph: Mapping[DependencyKey, Collection[DependencyKey]]) -> Sequence[DependencyKey]:
         """Orders the dependencies so that each one follows its dependencies."""
         try:
             return tuple(TopologicalSorter(graph).static_order())
@@ -348,5 +349,5 @@ class DependencyGraph[ProviderT: Provider]:
 
         return tuple(
             BoundProvider(provider=self.providers[key], arguments=key_to_arguments[key])
-            for key in self.sort(self._make_graph(key_to_arguments))
+            for key in self._sort(self._make_graph(key_to_arguments))
         )

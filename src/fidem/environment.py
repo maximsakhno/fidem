@@ -10,7 +10,14 @@ from uuid import uuid4
 
 from fidem._validation import check_unique
 from fidem.di.core import UnsupportedFunctionError
-from fidem.di.effects import EffectDependencyContainer, EffectDependencyDef, PreparedEffectHandler, Scope, Scopes
+from fidem.di.effects import (
+    EffectDependencyContainer,
+    EffectDependencyDef,
+    EffectDependencyLifetime,
+    PreparedEffectHandler,
+    Scope,
+    Scopes,
+)
 from fidem.effects import DatabaseEffect, Effect
 from fidem.errors import Error
 from fidem.messages import Command, Message, MessageContext, MessageId, Query
@@ -201,7 +208,11 @@ class EnvironmentImpl(Environment):
     ) -> ResultT:
         application_scope = self._get_application_scope()
         async with self._dependency_container.make_message_scope(message, message_context) as message_scope:
-            return await self._run_execution_plan(execution_plan, (application_scope, message_scope))
+            scopes = {
+                EffectDependencyLifetime.APPLICATION: application_scope,
+                EffectDependencyLifetime.MESSAGE: message_scope,
+            }
+            return await self._run_execution_plan(execution_plan, scopes)
 
     async def _run_execution_plan[ResultT](
         self,
@@ -278,10 +289,12 @@ class EnvironmentImpl(Environment):
     ) -> object:
         effect_scope = self._dependency_container.make_effect_scope(effect_call.effect, effect_call.effect_context)
         async with effect_scope:
-            effect_scopes = (
-                *scopes,
-                self._NO_TRANSACTION_SCOPE if transaction_scope is None else transaction_scope,
-                effect_scope,
-            )
+            effect_scopes = {
+                **scopes,
+                EffectDependencyLifetime.TRANSACTION: (
+                    self._NO_TRANSACTION_SCOPE if transaction_scope is None else transaction_scope
+                ),
+                EffectDependencyLifetime.EFFECT: effect_scope,
+            }
             await prepared_effect.handler.resolve(effect_scopes)
             return await prepared_effect.handler.call(effect_scopes)

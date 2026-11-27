@@ -14,7 +14,8 @@ from collections.abc import (
 )
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import Enum, auto
+from functools import partial
 from inspect import isasyncgenfunction, iscoroutinefunction
 from itertools import chain
 from types import TracebackType
@@ -62,13 +63,16 @@ EFFECT_CONTEXT_KEY: Final = DependencyKey(name="effect_context", type=EffectCont
 TRANSACTION_CONTEXT_KEY: Final = DependencyKey(name="transaction_context", type=TransactionContext)
 
 
-class EffectDependencyLifetime(IntEnum):
-    """Lifetimes from the widest to the narrowest, the value is the index of the scope in `Scopes`."""
+class EffectDependencyLifetime(Enum):
+    """Lifetimes from the widest to the narrowest."""
 
-    APPLICATION = 0
-    MESSAGE = 1
-    TRANSACTION = 2
-    EFFECT = 3
+    APPLICATION = auto()
+    MESSAGE = auto()
+    TRANSACTION = auto()
+    EFFECT = auto()
+
+    def is_narrower_than(self, other: Self) -> bool:
+        return self.value > other.value
 
 
 type DependencyFactory[DependencyT] = Callable[..., AsyncIterator[DependencyT]]
@@ -138,7 +142,7 @@ async def _exit_context_manager(
 
 
 class Scope:
-    """Dependencies of one application, message or effect, closes them on exit."""
+    """Dependencies of one application, message, transaction or effect, closes them on exit."""
 
     def __init__(self, dependencies: MutableMapping[DependencyKey, object]) -> None:
         self._dependencies: MutableMapping[DependencyKey, object] = dependencies
@@ -163,33 +167,42 @@ class Scope:
 
     @property
     def context_managers(self) -> Mapping[DependencyKey, AbstractAsyncContextManager[object]]:
-        """Context managers of the resolved dependencies in the order the dependencies were resolved."""
+        """Context managers of the entered dependencies in the order the dependencies were entered."""
         return self._context_managers
 
-    @property
-    def is_closed(self) -> bool:
-        return self._is_closed
-
-    @property
-    def lock(self) -> Lock:
-        """Serializes lazy resolution, created on first use because most scopes never need it."""
-        if self._lock is None:
-            self._lock = Lock()
-        return self._lock
-
-    async def add(
+    async def enter(
         self,
         key: DependencyKey,
-        dependency: object,
-        context_manager: AbstractAsyncContextManager[object],
+        open_dependency: Callable[[], AbstractAsyncContextManager[object]],
     ) -> None:
+        """Enters the context manager of the dependency and keeps the dependency until the scope closes."""
+        self._check_open(key)
+        context_manager = open_dependency()
+        dependency = await context_manager.__aenter__()
         if self._is_closed:
-            # Nobody would close a dependency resolved after its scope had been closed.
+            # Nobody would close a dependency entered after its scope had been closed.
             error = ScopeClosedError(key)
             await _exit_context_manager(context_manager, error)
             raise error
         self._dependencies[key] = dependency
         self._context_managers[key] = context_manager
+
+    async def enter_once(
+        self,
+        key: DependencyKey,
+        open_dependency: Callable[[], AbstractAsyncContextManager[object]],
+    ) -> None:
+        """Enters the dependency unless the scope has it, concurrent calls enter it once."""
+        # A closed scope keeps its closed dependencies, a call after the scope must not get them.
+        self._check_open(key)
+        if key in self._dependencies:
+            return
+        # Created on first use because most scopes never need it.
+        if self._lock is None:
+            self._lock = Lock()
+        async with self._lock:
+            if key not in self._dependencies:
+                await self.enter(key, open_dependency)
 
     async def close(self, exc: BaseException | None) -> None:
         """Closes the dependencies in the reverse order and raises the closing errors."""
@@ -204,9 +217,12 @@ class Scope:
             self._context_managers.clear()
             _raise_close_errors(exc, errors)
 
+    def _check_open(self, key: DependencyKey) -> None:
+        if self._is_closed:
+            raise ScopeClosedError(key)
 
-type Scopes = Sequence[Scope]
-"""Scopes indexed by lifetime."""
+
+type Scopes = Mapping[EffectDependencyLifetime, Scope]
 
 
 def _raise_close_errors(exc: BaseException | None, errors: Sequence[BaseException]) -> None:
@@ -239,10 +255,10 @@ def _get_scoped_arguments(
 
 @dataclass(slots=True, frozen=True)
 class _EffectResolutionStep:
-    """Resolves one dependency from the dependencies in the scopes and puts it into its scope."""
+    """Enters one dependency into the scope of its lifetime."""
 
-    # Several handler calls share these scopes, even concurrently through middlewares, so the first call resolves.
-    _LAZY_LIFETIMES: ClassVar[Collection[EffectDependencyLifetime]] = (
+    # Several handler calls share these scopes, even concurrently through middlewares, so the first call enters.
+    _SHARED_LIFETIMES: ClassVar[Collection[EffectDependencyLifetime]] = (
         EffectDependencyLifetime.MESSAGE,
         EffectDependencyLifetime.TRANSACTION,
     )
@@ -252,20 +268,14 @@ class _EffectResolutionStep:
 
     async def run(self, scopes: Scopes) -> None:
         scope = scopes[self.provider.lifetime]
-        # A closed scope keeps its closed dependencies, a call after the scope must not get them.
-        if scope.is_closed:
-            raise ScopeClosedError(self.provider.key)
-        if self.provider.lifetime not in self._LAZY_LIFETIMES:
-            await self._resolve(scope, scopes)
-        elif self.provider.key not in scope.dependencies:
-            async with scope.lock:
-                if self.provider.key not in scope.dependencies:
-                    await self._resolve(scope, scopes)
+        open_dependency = partial(self._open, scopes)
+        if self.provider.lifetime in self._SHARED_LIFETIMES:
+            await scope.enter_once(self.provider.key, open_dependency)
+        else:
+            await scope.enter(self.provider.key, open_dependency)
 
-    async def _resolve(self, scope: Scope, scopes: Scopes) -> None:
-        context_manager = self.provider.factory(**_get_scoped_arguments(self.arguments, scopes))
-        dependency = await context_manager.__aenter__()
-        await scope.add(self.provider.key, dependency, context_manager)
+    def _open(self, scopes: Scopes) -> AbstractAsyncContextManager[object]:
+        return self.provider.factory(**_get_scoped_arguments(self.arguments, scopes))
 
 
 @dataclass(slots=True, frozen=True)
@@ -319,7 +329,7 @@ class EffectDependencyContainer:
     def _check_lifetimes(self) -> None:
         for key, arguments in self._graph.arguments.items():
             for argument in arguments:
-                if self._lifetimes[argument.key] > self._lifetimes[key]:
+                if self._lifetimes[argument.key].is_narrower_than(self._lifetimes[key]):
                     raise DependencyLifetimeError(key, argument.key)
 
     def _make_step(self, provider: EffectProvider, arguments: Sequence[DependencyArgument]) -> _EffectResolutionStep:
@@ -383,8 +393,10 @@ class EffectDependencyContainer:
                     task_group.create_task(
                         self._start_dependency(
                             step=step,
-                            scopes=(scope,),
-                            dependency_events=[events[dependency_key] for dependency_key in self._graph.graph[key]],
+                            scopes={EffectDependencyLifetime.APPLICATION: scope},
+                            dependency_events=[
+                                events[dependency_key] for dependency_key in self._graph.dependencies[key]
+                            ],
                             event=events[key],
                         )
                     )
@@ -410,7 +422,7 @@ class EffectDependencyContainer:
         context_managers = dict(scope.context_managers)
         dependents: MutableMapping[DependencyKey, MutableSequence[DependencyKey]] = defaultdict(list)
         for key in context_managers:
-            for dependency_key in self._graph.graph[key]:
+            for dependency_key in self._graph.dependencies[key]:
                 dependents[dependency_key].append(key)
         events = {key: Event() for key in context_managers}
         errors: MutableSequence[BaseException] = []
