@@ -38,7 +38,6 @@ from fidem.effects import (
 from fidem.environment import (
     CallNext,
     DuplicateEffectDefError,
-    EffectCall,
     EffectDef,
     EffectMiddleware,
     EffectMiddlewareDef,
@@ -108,6 +107,7 @@ from fidem.operation_engine.errors import (
     UnsupportedEffectError,
 )
 from fidem.operation_engine.instructions import (
+    EffectCall,
     HandledEffect,
     OperationEngine,
 )

@@ -8,6 +8,7 @@ from fidem.transactions import AnyTransaction
 
 __all__ = [
     "CallEffectHandlerInstruction",
+    "EffectCall",
     "ExecutionPlan",
     "HandledEffect",
     "Instruction",
@@ -27,11 +28,18 @@ type ExecutionPlan[ResultT] = Effectful[ResultT, Instruction[Any]]
 
 
 @dataclass(frozen=True, slots=True)
-class CallEffectHandlerInstruction[ResultT](Instruction[ResultT]):
+class EffectCall:
+    """A call of the handler of an effect that a message yielded."""
+
     message_context: MessageContext
     message: Message[Any]
     effect_context: EffectContext
-    effect: HandledEffect[ResultT]
+    effect: HandledEffect[Any]
+
+
+@dataclass(frozen=True, slots=True)
+class CallEffectHandlerInstruction[ResultT](Instruction[ResultT]):
+    call: EffectCall
 
 
 @dataclass(frozen=True, slots=True)

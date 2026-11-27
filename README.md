@@ -358,7 +358,7 @@ async with environment:
 | `fidem.messages`                      | Сообщения, `MessageContext`, типы обработчиков сообщений, `QueryEffect`                         |
 | `fidem.transactions`                  | Читающие и пишущие транзакции, их эффекты, `TransactionContext`                                 |
 | `fidem.operation_engine.definitions`  | Объявления команд, запросов и событий, режимы, мидлвари сообщений                               |
-| `fidem.operation_engine.instructions` | Инструкции, план выполнения и интерфейс движка                                                  |
+| `fidem.operation_engine.instructions` | Инструкции, вызов эффекта `EffectCall`, план выполнения и интерфейс движка                      |
 | `fidem.operation_engine.errors`       | Ошибки объявлений и выполнения сообщений                                                        |
 | `fidem.operation_engine.engine`       | Движок                                                                                          |
 | `fidem.environment`                   | Объявления эффектов, мидлвари эффектов, Environment                                             |

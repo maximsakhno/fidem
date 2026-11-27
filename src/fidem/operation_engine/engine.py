@@ -46,6 +46,7 @@ from fidem.operation_engine.errors import (
 )
 from fidem.operation_engine.instructions import (
     CallEffectHandlerInstruction,
+    EffectCall,
     ExecutionPlan,
     Instruction,
     OperationEngine,
@@ -163,12 +164,13 @@ class _EffectPlanner:
             # A database effect outside a transaction runs as if the effectful called a transaction of this effect.
             return self.plan(_call_in_implicit_transaction(effect))
         if isinstance(effect, _HANDLED_EFFECT_TYPES):
-            return CallEffectHandlerInstruction(
+            effect_call = EffectCall(
                 message_context=self.execution.message_context,
                 message=self.execution.message,
                 effect_context=EffectContext(effect_id=self.generate_effect_id()),
                 effect=effect,
             )
+            return CallEffectHandlerInstruction(call=effect_call)
         if isinstance(effect, ReadTransactionEffect | WriteTransactionEffect):
             return RunTransactionInstruction(
                 transaction=effect.transaction,
