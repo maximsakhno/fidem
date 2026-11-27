@@ -167,12 +167,12 @@ ignore-variadic-names = true
 [tool.ruff.lint.isort]
 combine-as-imports = true
 
-[tool.pytest.ini_options]
+[tool.pytest]
 minversion = "9.0"
 testpaths = ["tests"]
 strict = true
 filterwarnings = ["error"]
-timeout = 30
+timeout = "30"
 addopts = ["-ra"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

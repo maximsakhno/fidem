@@ -20,6 +20,7 @@ from fidem.serialization import (
     Serializer,
     UnsupportedTypeError,
 )
+from tests.ids import type_name
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,11 +59,11 @@ def serializer(request: pytest.FixtureRequest) -> Serializer:
 @pytest.mark.parametrize(
     ("type_", "value"),
     [
-        (RegisterUser, USER),
-        (list[Address], [Address(city="Yerevan"), Address(city="Gyumri")]),
-        (Address | None, Address(city="Yerevan")),
-        (Address | None, None),
-        (int, 42),
+        pytest.param(RegisterUser, USER, id="message"),
+        pytest.param(list[Address], [Address(city="Yerevan"), Address(city="Gyumri")], id="list"),
+        pytest.param(Address | None, Address(city="Yerevan"), id="optional_value"),
+        pytest.param(Address | None, None, id="optional_none"),
+        pytest.param(int, 42, id="int"),
     ],
 )
 def test_value_survives_round_trip_through_both_forms(serializer: Serializer, type_: object, value: object) -> None:
@@ -136,7 +137,11 @@ def test_unserializable_value_fails(serializer: Serializer) -> None:
 
 @pytest.mark.parametrize(
     "data",
-    [{"city": 1}, {}, ["Yerevan"]],
+    [
+        pytest.param({"city": 1}, id="wrong_field_type"),
+        pytest.param({}, id="missing_field"),
+        pytest.param(["Yerevan"], id="array_instead_of_object"),
+    ],
 )
 def test_data_of_another_shape_fails(serializer: Serializer, data: JsonValue) -> None:
     codec = serializer.codec(Address)
@@ -178,7 +183,7 @@ def test_json_schema_keeps_nested_types_in_defs(serializer: Serializer) -> None:
     dumps(schema)
 
 
-@pytest.mark.parametrize("serializer", [PydanticSerializer(strict=True), MsgspecSerializer()])
+@pytest.mark.parametrize("serializer", [PydanticSerializer(strict=True), MsgspecSerializer()], ids=type_name)
 def test_strict_serializer_does_not_coerce(serializer: Serializer) -> None:
     codec = serializer.codec(int)
 
@@ -188,7 +193,7 @@ def test_strict_serializer_does_not_coerce(serializer: Serializer) -> None:
         codec.from_json_value("1")
 
 
-@pytest.mark.parametrize("serializer", [PydanticSerializer(), MsgspecSerializer(strict=False)])
+@pytest.mark.parametrize("serializer", [PydanticSerializer(), MsgspecSerializer(strict=False)], ids=type_name)
 def test_lax_serializer_coerces(serializer: Serializer) -> None:
     codec = serializer.codec(int)
 
