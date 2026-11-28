@@ -4,10 +4,9 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
-import pytest_asyncio
 from asyncpg import Connection, InvalidTextRepresentationError, Pool, Record, UniqueViolationError
 
-from fidem.asyncpg import OUTBOX_SECTION, AsyncpgConnectionDef, AsyncpgOutboxEffectDef, migrate
+from fidem.asyncpg import AsyncpgConnectionDef, AsyncpgOutboxEffectDef
 from fidem.di.effects import EffectDependencyDef
 from fidem.effects import DatabaseWriteEffect
 from fidem.environment import EffectDef, EnvironmentImpl
@@ -35,12 +34,6 @@ INSERT_SQL = """
 INSERT INTO fidem.outbox (id, event_id, source_message_id, handler, event_name, event_version, payload)
 VALUES ($1, 'event', 'message', 'handler', 'test.event', 1, '{"field": 1}')
 """
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def outbox_pool(pool: Pool) -> Pool:
-    await migrate(pool, [OUTBOX_SECTION])
-    return pool
 
 
 async def test_section_creates_outbox_with_index_of_pending_rows(outbox_pool: Pool) -> None:

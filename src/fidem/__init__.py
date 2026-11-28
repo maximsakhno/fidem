@@ -31,6 +31,7 @@ from fidem.effects import (
     ExternalEffect,
     ExternalReadEffect,
     ExternalWriteEffect,
+    HandledEffect,
     InternalEffect,
     ReadEffect,
     WriteEffect,
@@ -100,6 +101,7 @@ from fidem.operation_engine.errors import (
     DuplicateEventHandlerDefError,
     DuplicateMessageMiddlewareDefError,
     DuplicateQueryDefError,
+    EventHandlerNotDefinedError,
     EventNotDefinedError,
     MessageNotDefinedError,
     UnsupportedAtomicResultError,
@@ -107,8 +109,11 @@ from fidem.operation_engine.errors import (
 )
 from fidem.operation_engine.instructions import (
     EffectCall,
-    HandledEffect,
     OperationEngine,
+)
+from fidem.outbox import (
+    OutboxDispatcherOptions,
+    RetryPolicy,
 )
 from fidem.serialization import (
     Codec,
@@ -184,6 +189,7 @@ __all__ = [
     "EventDef",
     "EventHandlerDef",
     "EventHandlerName",
+    "EventHandlerNotDefinedError",
     "EventNotDefinedError",
     "EventVersion",
     "ExecutionMode",
@@ -210,6 +216,7 @@ __all__ = [
     "MissingAnnotationError",
     "OperationEngine",
     "OperationEngineImpl",
+    "OutboxDispatcherOptions",
     "Proceed",
     "Query",
     "QueryDef",
@@ -220,6 +227,7 @@ __all__ = [
     "ReadTransaction",
     "ReadTransactionEffect",
     "ReadTransactionEffectful",
+    "RetryPolicy",
     "ScopeClosedError",
     "SerializationError",
     "Serializer",

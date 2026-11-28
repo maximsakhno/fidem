@@ -64,15 +64,31 @@ TRANSACTION_CONTEXT_KEY: Final = DependencyKey(name="transaction_context", type=
 
 
 class EffectDependencyLifetime(Enum):
-    """Lifetimes from the widest to the narrowest."""
+    """Lifetimes of scopes, each scope lives inside the scope of its parent lifetime."""
 
     APPLICATION = auto()
+    SERVICE = auto()
+    """Starts after the application dependencies and stops before them, so only services see it."""
     MESSAGE = auto()
     TRANSACTION = auto()
     EFFECT = auto()
 
-    def is_narrower_than(self, other: Self) -> bool:
-        return self.value > other.value
+    def can_depend_on(self, other: Self) -> bool:
+        """A dependency sees the scope of its lifetime and the scopes around it."""
+        lifetime: EffectDependencyLifetime | None = self
+        while lifetime is not None:
+            if lifetime == other:
+                return True
+            lifetime = _PARENT_LIFETIMES.get(lifetime)
+        return False
+
+
+_PARENT_LIFETIMES: Final[Mapping[EffectDependencyLifetime, EffectDependencyLifetime]] = {
+    EffectDependencyLifetime.SERVICE: EffectDependencyLifetime.APPLICATION,
+    EffectDependencyLifetime.MESSAGE: EffectDependencyLifetime.APPLICATION,
+    EffectDependencyLifetime.TRANSACTION: EffectDependencyLifetime.MESSAGE,
+    EffectDependencyLifetime.EFFECT: EffectDependencyLifetime.TRANSACTION,
+}
 
 
 type DependencyFactory[DependencyT] = Callable[..., AsyncIterator[DependencyT]]
@@ -88,7 +104,7 @@ class EffectDependencyDef[DependencyT]:
 
 
 class DependencyLifetimeError(Error):
-    """A dependency requires a dependency with a narrower lifetime."""
+    """A dependency or the handler of an effect requires a dependency whose scope is not around its own."""
 
     def __init__(self, consumer: object, dependency: DependencyKey) -> None:
         super().__init__(consumer, dependency)
@@ -307,30 +323,50 @@ class EffectDependencyContainer:
         self,
         dependency_defs: Collection[EffectDependencyDef[Any]] = (),
         effect_types: Collection[type[Effect[Any]]] = (),
+        service_dependencies: Mapping[DependencyKey, object] | None = None,
     ) -> None:
+        """Service dependencies are builtin dependencies that only services see."""
+        self._service_dependencies: Mapping[DependencyKey, object] = (
+            {} if service_dependencies is None else service_dependencies
+        )
+        builtin_nodes = {
+            **self._BUILTIN_NODES,
+            **{Node(key=key): EffectDependencyLifetime.SERVICE for key in self._service_dependencies},
+        }
         self._graph: DependencyGraph[EffectProvider] = DependencyGraph(
             providers=tuple(EffectProvider.make(dependency_def) for dependency_def in dependency_defs),
             subject_key=EFFECT_KEY,
             subject_types=effect_types,
-            builtin_nodes=tuple(self._BUILTIN_NODES),
+            builtin_nodes=tuple(builtin_nodes),
         )
         self._lifetimes: Mapping[DependencyKey, EffectDependencyLifetime] = {
-            **{node.key: lifetime for node, lifetime in self._BUILTIN_NODES.items()},
+            **{node.key: lifetime for node, lifetime in builtin_nodes.items()},
             EFFECT_KEY: EffectDependencyLifetime.EFFECT,
             **{key: provider.lifetime for key, provider in self._graph.providers.items()},
         }
         self._check_lifetimes()
-        self._application_steps: Mapping[DependencyKey, _EffectResolutionStep] = {
-            key: self._make_step(self._graph.providers[key], self._graph.arguments[key])
-            for key in self._graph.order
-            if self._graph.providers[key].lifetime == EffectDependencyLifetime.APPLICATION
-        }
+        self._application_steps: Mapping[DependencyKey, _EffectResolutionStep] = self._make_steps(
+            EffectDependencyLifetime.APPLICATION
+        )
+        self._service_steps: Mapping[DependencyKey, _EffectResolutionStep] = self._make_steps(
+            EffectDependencyLifetime.SERVICE
+        )
 
     def _check_lifetimes(self) -> None:
         for key, arguments in self._graph.arguments.items():
-            for argument in arguments:
-                if self._lifetimes[argument.key].is_narrower_than(self._lifetimes[key]):
-                    raise DependencyLifetimeError(key, argument.key)
+            self._check_lifetime(self._lifetimes[key], arguments)
+
+    def _check_lifetime(self, lifetime: EffectDependencyLifetime, arguments: Iterable[DependencyArgument]) -> None:
+        for argument in arguments:
+            if not lifetime.can_depend_on(self._lifetimes[argument.key]):
+                raise DependencyLifetimeError(argument.consumer, argument.key)
+
+    def _make_steps(self, lifetime: EffectDependencyLifetime) -> Mapping[DependencyKey, _EffectResolutionStep]:
+        return {
+            key: self._make_step(self._graph.providers[key], self._graph.arguments[key])
+            for key in self._graph.order
+            if self._graph.providers[key].lifetime == lifetime
+        }
 
     def _make_step(self, provider: EffectProvider, arguments: Sequence[DependencyArgument]) -> _EffectResolutionStep:
         return _EffectResolutionStep(provider=provider, arguments=self._scope_arguments(arguments))
@@ -350,6 +386,7 @@ class EffectDependencyContainer:
         if not iscoroutinefunction(handler):
             raise UnsupportedFunctionError(handler)
         arguments = self._graph.bind(handler, get_parameters(handler), effect_type)
+        self._check_lifetime(EffectDependencyLifetime.EFFECT, arguments)
         bound_providers = self._graph.collect(arguments, effect_type)
         if not in_transaction:
             self._check_no_transaction_dependencies(
@@ -402,6 +439,21 @@ class EffectDependencyContainer:
                     )
         except BaseException as exc:
             await self.stop(scope, exc)
+            raise
+        return scope
+
+    async def start_services(self, application_scope: Scope) -> Scope:
+        """Starts services one by one, each one after its dependencies, the scope stops them in the reverse order."""
+        scope = Scope(dict(self._service_dependencies))
+        scopes = {
+            EffectDependencyLifetime.APPLICATION: application_scope,
+            EffectDependencyLifetime.SERVICE: scope,
+        }
+        try:
+            for step in self._service_steps.values():
+                await step.run(scopes)
+        except BaseException as exc:
+            await scope.close(exc)
             raise
         return scope
 

@@ -6,11 +6,12 @@ import pytest
 from fidem.di.core import DependencyNotFoundError, UnsupportedFunctionError
 from fidem.effects import Effect, Effectful
 from fidem.guards import GuardDef
-from fidem.messages import AtomicEffectful, Event, QueryEffect, StagedEffectful, StagedHandler
+from fidem.messages import AtomicEffectful, Event, MessageContext, QueryEffect, StagedEffectful, StagedHandler
 from fidem.operation_engine.definitions import (
     AtomicCommandDef,
     AtomicEventHandlerDef,
     EventDef,
+    ExecutionMode,
     MessageMiddlewareDef,
     MessageMiddlewareEffectful,
     Proceed,
@@ -21,6 +22,7 @@ from fidem.operation_engine.engine import OperationEngineImpl
 from fidem.operation_engine.errors import (
     DuplicateEventDefError,
     DuplicateEventHandlerDefError,
+    EventHandlerNotDefinedError,
     EventNotDefinedError,
     MessageNotDefinedError,
     UnsupportedEffectError,
@@ -359,6 +361,84 @@ class TestEvents:
             run_plan(engine.handle(TestCommand(), MESSAGE_CONTEXT))
 
         assert exc_info.value.args == (event,)
+
+
+class TestDeliver:
+    def test_exposes_event_defs(self) -> None:
+        engine = make_engine(handle_without_effects, event_defs=EVENT_DEFS)
+
+        assert engine.event_defs == tuple(EVENT_DEFS)
+
+    def test_runs_named_staged_handler_with_event_and_message_context(self) -> None:
+        def handler(event: TestEvent, message_context: MessageContext) -> StagedEffectful[None]:
+            calls.append((event, message_context))
+            yield from effect
+
+        calls: MutableSequence[tuple[TestEvent, MessageContext]] = []
+        event = TestEvent()
+        effect = TestInternalEffect()
+        engine = OperationEngineImpl(
+            event_defs=[
+                EventDef(
+                    name="test",
+                    event_type=TestEvent,
+                    handler_defs=[StagedEventHandlerDef("other", handle_event), StagedEventHandlerDef("test", handler)],
+                ),
+            ],
+        )
+
+        effects = collect_effects(engine.deliver(event, "test", MESSAGE_CONTEXT))
+
+        assert calls == [(event, MESSAGE_CONTEXT)]
+        assert [instruction.call.effect for instruction in effects] == [effect]
+        assert effects[0].call.message is event
+
+    def test_runs_atomic_handler_in_its_write_transaction(self) -> None:
+        engine = make_engine(handle_without_effects, event_defs=EVENT_DEFS)
+        transactions: MutableSequence[object] = []
+
+        run_plan(engine.deliver(TestEvent(), "second", MESSAGE_CONTEXT), on_transaction=transactions.append)
+
+        assert transactions == [save_nothing]
+
+    def test_writes_events_of_handler_with_message_id_of_delivery_as_source(self) -> None:
+        def handler() -> StagedEffectful[None, OtherEvent]:
+            yield from OtherEvent()
+
+        engine = OperationEngineImpl(
+            event_defs=[
+                EventDef("test", TestEvent, handler_defs=[StagedEventHandlerDef("test", handler)]),
+                EventDef("other", OtherEvent, handler_defs=[StagedEventHandlerDef("other", handle_event)]),
+            ],
+        )
+
+        effects = collect_effects(engine.deliver(TestEvent(), "test", MessageContext(message_id="event:test")))
+
+        assert isinstance(effects[0].call.effect, WriteOutboxEffect)
+        assert [outbox_event.source_message_id for outbox_event in effects[0].call.effect.events] == ["event:test"]
+
+    def test_raises_event_not_defined_error_when_delivers_undefined_event(self) -> None:
+        engine = make_engine(handle_without_effects, event_defs=EVENT_DEFS)
+
+        with pytest.raises(EventNotDefinedError) as exc_info:
+            run_plan(engine.deliver(UndefinedEvent(), "first", MESSAGE_CONTEXT))
+
+        assert exc_info.value.args == (UndefinedEvent,)
+
+    def test_raises_event_handler_not_defined_error_when_handler_is_not_declared(self) -> None:
+        engine = make_engine(handle_without_effects, event_defs=EVENT_DEFS)
+
+        with pytest.raises(EventHandlerNotDefinedError) as exc_info:
+            run_plan(engine.deliver(TestEvent(), "unknown", MESSAGE_CONTEXT))
+
+        assert exc_info.value.args == (TestEvent, "unknown")
+
+    def test_raises_not_implemented_error_when_handler_is_durable(self) -> None:
+        handler_def = StagedEventHandlerDef("test", handle_event, execution_mode=ExecutionMode.DURABLE)
+        engine = OperationEngineImpl(event_defs=[EventDef("test", TestEvent, handler_defs=[handler_def])])
+
+        with pytest.raises(NotImplementedError):
+            run_plan(engine.deliver(TestEvent(), "test", MESSAGE_CONTEXT))
 
 
 class TestHandleEvent:

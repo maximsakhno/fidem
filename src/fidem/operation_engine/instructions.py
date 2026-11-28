@@ -1,9 +1,11 @@
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
-from fidem.effects import DatabaseEffect, Effect, EffectContext, Effectful, ExternalEffect, InternalEffect
-from fidem.messages import Command, Message, MessageContext, Query
+from fidem.effects import Effect, EffectContext, Effectful, HandledEffect
+from fidem.messages import Command, Event, EventHandlerName, Message, MessageContext, Query
+from fidem.operation_engine.definitions import EventDef
 from fidem.transactions import AnyTransaction
 
 __all__ = [
@@ -15,9 +17,6 @@ __all__ = [
     "OperationEngine",
     "RunTransactionInstruction",
 ]
-
-
-type HandledEffect[ResultT] = InternalEffect[ResultT] | ExternalEffect[ResultT] | DatabaseEffect[ResultT]
 
 
 class Instruction[ResultT](Effect[ResultT]):
@@ -51,6 +50,12 @@ class RunTransactionInstruction[ResultT](Instruction[ResultT]):
 
 
 class OperationEngine(ABC):
+    @property
+    @abstractmethod
+    def event_defs(self) -> Collection[EventDef[Any]]:
+        """Declared events, by which a delivery finds the type of its event and its handlers."""
+        raise NotImplementedError
+
     @abstractmethod
     def handle[ResultT](
         self,
@@ -58,4 +63,14 @@ class OperationEngine(ABC):
         message_context: MessageContext,
     ) -> ExecutionPlan[ResultT]:
         """Plans the operation of the command or the query."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def deliver(
+        self,
+        event: Event,
+        handler: EventHandlerName,
+        message_context: MessageContext,
+    ) -> ExecutionPlan[None]:
+        """Plans the operation of one handler of the event."""
         raise NotImplementedError

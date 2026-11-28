@@ -7,6 +7,8 @@ import pytest_asyncio
 from asyncpg import CannotConnectNowError, Pool, create_pool
 from testcontainers.core.container import DockerContainer
 
+from fidem.asyncpg import OUTBOX_SECTION, migrate
+
 POSTGRES_IMAGE: Final = "postgres:17-alpine"
 POSTGRES_PORT: Final = 5432
 POSTGRES_DATA: Final = "/pgdata/data"
@@ -53,6 +55,12 @@ async def pool(postgres_dsn: str) -> AsyncIterator[Pool]:
     async with await _connect(postgres_dsn) as pool:
         await pool.execute("CREATE TABLE items (id text PRIMARY KEY, value text NOT NULL)")
         yield pool
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def outbox_pool(pool: Pool) -> Pool:
+    await migrate(pool, [OUTBOX_SECTION])
+    return pool
 
 
 async def _connect(dsn: str) -> Pool:
