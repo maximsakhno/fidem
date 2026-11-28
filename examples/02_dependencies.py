@@ -88,10 +88,10 @@ class EffectLog(Log):
 USERS: MutableMapping[str, User] = {"u1": User(id="u1", name="Alice")}
 
 
-# A factory of a dependency that needs no closing yields it and ends.
+# A dependency that needs no closing is returned by an async function.
 @dependency
-async def settings() -> AsyncGenerator[Settings]:
-    yield Settings(database_url="db://primary", replica_url="db://replica")
+async def settings() -> Settings:
+    return Settings(database_url="db://primary", replica_url="db://replica")
 
 
 # Both databases have the type `Database`, handlers choose one by the parameter name.

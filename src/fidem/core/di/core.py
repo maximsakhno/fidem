@@ -34,6 +34,7 @@ __all__ = [
     "get_arguments",
     "get_parameters",
     "get_return_type",
+    "get_signature",
     "make_key",
     "make_message_dependencies",
 ]
@@ -102,7 +103,7 @@ class Provider:
     """Annotations of the parameters."""
 
 
-def _get_signature(function: Callable[..., object]) -> Signature:
+def get_signature(function: Callable[..., object]) -> Signature:
     try:
         return signature(function, eval_str=True)
     except NameError as exc:
@@ -112,7 +113,7 @@ def _get_signature(function: Callable[..., object]) -> Signature:
 def get_parameters(function: Callable[..., object]) -> Mapping[ParameterName, object]:
     """Returns the annotations of the parameters that dependency injection passes by name."""
     parameters: MutableMapping[ParameterName, object] = {}
-    for parameter in _get_signature(function).parameters.values():
+    for parameter in get_signature(function).parameters.values():
         if parameter.kind not in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY):
             raise UnsupportedParameterError(function, parameter.name)
         if parameter.annotation is Parameter.empty:
@@ -122,7 +123,7 @@ def get_parameters(function: Callable[..., object]) -> Mapping[ParameterName, ob
 
 
 def get_return_type(function: Callable[..., object]) -> object:
-    return_type = _get_signature(function).return_annotation
+    return_type = get_signature(function).return_annotation
     if return_type is Signature.empty:
         raise MissingAnnotationError(function, "return")
     return return_type

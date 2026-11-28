@@ -10,6 +10,7 @@ from fidem import (
     Effectful,
     EffectNotDefinedError,
     Event,
+    ExternalWriteEffect,
     Fidem,
     InternalEffect,
     MessageContext,
@@ -22,6 +23,7 @@ from fidem import (
     StagedEffectful,
     command,
     command_handler,
+    dependency,
     effect,
     effect_handler,
     effect_middleware,
@@ -29,6 +31,7 @@ from fidem import (
     event_handler,
     guard,
     guard_input,
+    instance,
     middleware,
     query_handler,
 )
@@ -39,6 +42,7 @@ from fidem.core import (
     MessageMiddlewareDef,
     OutboxDispatcherOptions,
     StagedEventHandlerDef,
+    UnsupportedFunctionError,
 )
 from fidem.core.environment import CallNext
 from fidem.core.operation_engine.instructions import EffectCall
@@ -69,6 +73,22 @@ class GreetedEvent(Event):
 @dataclass(frozen=True, slots=True)
 class GreetingEffect(InternalEffect[str]):
     name: str
+
+
+@effect("send")
+@dataclass(frozen=True, slots=True)
+class SendEffect(ExternalWriteEffect[str]):
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class Greeting:
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class Punctuation:
+    mark: str
 
 
 @guard_input
@@ -141,6 +161,72 @@ class TestHandle:
 
         assert not hasattr(fidem, "deliver")
         assert not hasattr(fidem, "event_defs")
+
+
+class TestPlainFunctions:
+    async def test_runs_plain_guard_and_plain_handler(self) -> None:
+        @guard
+        def current_user(token: Token) -> User:
+            return User(token.user)
+
+        @command_handler
+        def greet_user(command: GreetCommand, user: User) -> str:
+            return f"{user.name} greets {command.name}"
+
+        async with Fidem(definitions=[greet_user, current_user, Token]) as fidem:
+            result = await fidem.handle(GreetCommand("Bob"), Token("Alice"))
+
+        assert result == "Alice greets Bob"
+
+    async def test_runs_write_that_plain_atomic_handler_returns(self) -> None:
+        @command_handler
+        def send(command: GreetCommand) -> SendEffect:
+            return SendEffect(command.name)
+
+        @effect_handler
+        async def handle_send(effect: SendEffect) -> str:
+            return f"sent to {effect.name}"
+
+        async with Fidem(definitions=[send, handle_send]) as fidem:
+            result = await fidem.handle(GreetCommand("Alice"))
+
+        assert result == "sent to Alice"
+
+    def test_raises_unsupported_function_error_for_plain_middleware(self) -> None:
+        def plain() -> object:
+            return "cached"
+
+        with pytest.raises(UnsupportedFunctionError):
+            Fidem(definitions=[greet], middlewares=[plain])  # pyright: ignore[reportArgumentType] - checked at runtime
+
+    def test_raises_unsupported_function_error_for_async_guard(self) -> None:
+        @guard
+        async def current_user(token: Token) -> User:
+            raise NotImplementedError
+
+        @command_handler
+        def greet_user(command: GreetCommand, user: User) -> str:
+            raise NotImplementedError
+
+        with pytest.raises(UnsupportedFunctionError):
+            Fidem(definitions=[greet_user, current_user, Token])
+
+
+class TestDependencies:
+    async def test_passes_instance_and_result_of_async_factory(self) -> None:
+        @dependency
+        async def greeting() -> Greeting:
+            return Greeting("hi")
+
+        @effect_handler
+        async def handle(effect: GreetingEffect, greeting: Greeting, punctuation: Punctuation) -> str:
+            return f"{greeting.text}, {effect.name}{punctuation.mark}"
+
+        definitions = [get_greeting, handle, greeting, instance(Punctuation("!"))]
+        async with Fidem(definitions=definitions) as fidem:
+            result = await fidem.handle(GreetQuery("Alice"))
+
+        assert result == "hi, Alice!"
 
 
 class TestStdlib:

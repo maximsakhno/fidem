@@ -1,5 +1,5 @@
 from asyncio import run
-from collections.abc import AsyncGenerator, MutableMapping
+from collections.abc import MutableMapping
 from dataclasses import dataclass, field, replace
 
 from fidem import (
@@ -13,11 +13,11 @@ from fidem import (
     StagedEffectful,
     command,
     command_handler,
-    dependency,
     effect,
     effect_handler,
     guard,
     guard_input,
+    instance,
 )
 
 
@@ -63,12 +63,6 @@ class TokenVerifier:
         if secret != self._secret:
             raise AuthenticationError("Invalid token")
         return user_id
-
-
-# The verifier is made from the settings on start, and a guard reaches it through an effect.
-@dependency
-async def token_verifier() -> AsyncGenerator[TokenVerifier]:
-    yield TokenVerifier(TOKEN_SECRET)
 
 
 # ── Effects ───────────────────────────────────────────────
@@ -134,8 +128,8 @@ def current_user(token: AccessToken) -> Effectful[CurrentUser, QueryEffect]:
 
 # A handler that takes `Admin` runs only for admins.
 @guard
-def admin(current_user: CurrentUser) -> Effectful[Admin, QueryEffect]:
-    yield from ()
+# A guard without effects is a plain function.
+def admin(current_user: CurrentUser) -> Admin:
     if not current_user.user.is_admin:
         raise PermissionDeniedError(f"{current_user.user.name} is not an admin")
     return Admin(current_user.user)
@@ -157,7 +151,8 @@ async def main() -> None:
             AccessToken,
             current_user,
             admin,
-            token_verifier,
+            # The verifier is made from the settings on start, and a guard reaches it through an effect.
+            instance(TokenVerifier(TOKEN_SECRET)),
             handle_verify_token,
             handle_get_user,
             handle_save_user,

@@ -27,14 +27,13 @@ from examples.events.common import (
     SaveUserEffect,
     register_and_report,
 )
-from fidem import EffectContext, Fidem, dependency, effect_handler
+from fidem import EffectContext, Fidem, dependency, effect_handler, instance
 from fidem.asyncpg import (
     OUTBOX_SECTION,
-    AsyncpgConnectionDef,
+    AsyncpgDatabase,
     AsyncpgOutbox,
     migrate,
 )
-from fidem.core import Serializer
 from fidem.pydantic import PydanticSerializer
 
 DATABASE_URL = environ.get("DATABASE_URL", "postgresql://postgres@localhost:5432/postgres")
@@ -56,12 +55,6 @@ async def pool() -> AsyncGenerator[Pool]:
         await migrate(pool, [OUTBOX_SECTION])
         await pool.execute(SCHEMA)
         yield pool
-
-
-# The outbox stores events as JSON, so the driver needs a serializer.
-@dependency
-async def serializer() -> AsyncGenerator[Serializer]:
-    yield PydanticSerializer()
 
 
 # ── Effect handlers ───────────────────────────────────────
@@ -97,9 +90,9 @@ async def main() -> None:
             handle_save_user,
             handle_record_activity,
             handle_get_deliveries,
-            pool,
-            serializer,
-            AsyncpgConnectionDef(),
+            AsyncpgDatabase(pool),
+            # The outbox stores events as JSON, so the driver needs a serializer.
+            instance(PydanticSerializer()),
             # The outbox is a bundle of the write of events and the service of the dispatcher,
             # a process that only writes events gets `outbox.writer`.
             outbox,

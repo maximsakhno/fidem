@@ -21,6 +21,9 @@ from fidem._decorators import (
     middleware,
     query_handler,
 )
+from fidem._dependencies import (
+    instance,
+)
 from fidem._fidem import (
     Fidem,
 )
@@ -179,6 +182,7 @@ __all__ = [
     "event_handler",
     "guard",
     "guard_input",
+    "instance",
     "middleware",
     "query_handler",
 ]

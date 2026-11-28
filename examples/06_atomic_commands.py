@@ -34,7 +34,7 @@ from fidem import (
     effect_handler,
     query_handler,
 )
-from fidem.asyncpg import AsyncpgConnectionDef
+from fidem.asyncpg import AsyncpgDatabase
 
 DATABASE_URL = environ.get("DATABASE_URL", "postgresql://postgres@localhost:5432/postgres")
 SCHEMA = """
@@ -186,8 +186,7 @@ async def main() -> None:
             handle_get_account,
             handle_change_balance,
             handle_record_transfer,
-            pool,
-            AsyncpgConnectionDef(),
+            AsyncpgDatabase(pool),
         ],
     )
 
