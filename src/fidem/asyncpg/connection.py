@@ -5,6 +5,7 @@ from typing import Final, Literal, cast
 
 from asyncpg import Connection, Pool
 
+from fidem._bundle import Bundle
 from fidem.core.di.core import DependencyName
 from fidem.core.di.effects import EffectDependencyDef, EffectDependencyLifetime
 from fidem.core.errors import Error
@@ -12,6 +13,7 @@ from fidem.core.transactions import IMPLICIT_READ_TRANSACTION, AnyTransaction, T
 
 __all__ = [
     "AsyncpgConnectionDef",
+    "AsyncpgDatabase",
     "AsyncpgTransactionOptions",
     "IsolationLevel",
     "TransactionRolledBackError",
@@ -29,14 +31,18 @@ class AsyncpgTransactionOptions:
     isolation: IsolationLevel = "read_committed"
 
 
+# Each query of a read committed transaction sees its own snapshot, so consistent reads need more.
+_READ_OPTIONS: Final = AsyncpgTransactionOptions(isolation="repeatable_read")
+_WRITE_OPTIONS: Final = AsyncpgTransactionOptions()
+
+
 class AsyncpgConnectionDef(EffectDependencyDef[Connection]):
     """A connection from the `asyncpg.Pool` dependency in the transaction of the effect."""
 
     def __init__(
         self,
-        # Each query of a read committed transaction sees its own snapshot, so consistent reads need more.
-        read_options: AsyncpgTransactionOptions = AsyncpgTransactionOptions(isolation="repeatable_read"),
-        write_options: AsyncpgTransactionOptions = AsyncpgTransactionOptions(),
+        read_options: AsyncpgTransactionOptions = _READ_OPTIONS,
+        write_options: AsyncpgTransactionOptions = _WRITE_OPTIONS,
         transaction_options: Mapping[AnyTransaction, AsyncpgTransactionOptions] | None = None,
         name: DependencyName = "",
     ) -> None:
@@ -101,3 +107,28 @@ async def _transaction(connection: Connection, isolation: IsolationLevel, *, rea
     # Unlike `Connection.transaction()`, this sees that the commit of a failed transaction rolled it back.
     if await connection.execute("COMMIT") == "ROLLBACK":
         raise TransactionRolledBackError
+
+
+class AsyncpgDatabase(Bundle):
+    """PostgreSQL of the application: the pool its factory makes and a connection from it in each transaction.
+
+    The factory of `asyncpg.Pool` is declared with `@dependency`, so discovery of its module finds the same factory.
+    """
+
+    def __init__(
+        self,
+        pool: Callable[..., object],
+        *,
+        read_options: AsyncpgTransactionOptions = _READ_OPTIONS,
+        write_options: AsyncpgTransactionOptions = _WRITE_OPTIONS,
+        transaction_options: Mapping[AnyTransaction, AsyncpgTransactionOptions] | None = None,
+    ) -> None:
+        """Options of a transaction replace the options of its kind."""
+        super().__init__(
+            pool,
+            AsyncpgConnectionDef(
+                read_options=read_options,
+                write_options=write_options,
+                transaction_options=transaction_options,
+            ),
+        )

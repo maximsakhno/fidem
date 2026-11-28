@@ -1,5 +1,6 @@
 from fidem.asyncpg.connection import (
     AsyncpgConnectionDef,
+    AsyncpgDatabase,
     AsyncpgTransactionOptions,
     IsolationLevel,
     TransactionRolledBackError,
@@ -21,6 +22,7 @@ from fidem.asyncpg.outbox import (
 __all__ = [
     "OUTBOX_SECTION",
     "AsyncpgConnectionDef",
+    "AsyncpgDatabase",
     "AsyncpgOutbox",
     "AsyncpgTransactionOptions",
     "DuplicateMigrationSectionError",

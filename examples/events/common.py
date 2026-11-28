@@ -7,12 +7,11 @@ the effects of its storage.
 """
 
 from asyncio import sleep, timeout
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 
 from fidem import (
-    AtomicEffectful,
     Command,
     DatabaseReadEffect,
     DatabaseWriteEffect,
@@ -25,6 +24,7 @@ from fidem import (
     RetryPolicy,
     StagedEffectful,
     WriteTransaction,
+    WriteTransactionEffect,
     WriteTransactionEffectful,
     command,
     command_handler,
@@ -127,8 +127,8 @@ def save_user(command: RegisterUserCommand) -> WriteTransactionEffectful[str, Us
 
 
 @command_handler
-def register_user(command: RegisterUserCommand) -> AtomicEffectful[str, UserRegistered]:
-    yield from ()
+# An atomic handler without reads is a plain function that returns its write.
+def register_user(command: RegisterUserCommand) -> WriteTransactionEffect[str, UserRegistered]:
     return save_user(command)
 
 
@@ -144,14 +144,12 @@ def record_activity(user_id: str, action: str) -> WriteTransactionEffectful[None
 
 
 @event_handler(name="record")
-def record_registration(event: UserRegistered) -> AtomicEffectful[None]:
-    yield from ()
+def record_registration(event: UserRegistered) -> WriteTransactionEffect[None]:
     return record_activity(event.user_id, "registration")
 
 
 @event_handler(name="record")
-def record_welcome(event: WelcomeSent) -> AtomicEffectful[None]:
-    yield from ()
+def record_welcome(event: WelcomeSent) -> WriteTransactionEffect[None]:
     return record_activity(event.user_id, "welcome")
 
 
@@ -162,8 +160,8 @@ def get_deliveries(query: GetDeliveriesQuery) -> QueryEffectful[Sequence[Deliver
 
 # The mailer keeps its state while the application runs, so it is a dependency of the handler of the effect.
 @dependency
-async def mailer() -> AsyncGenerator[Mailer]:
-    yield Mailer()
+async def mailer() -> Mailer:
+    return Mailer()
 
 
 @effect_handler

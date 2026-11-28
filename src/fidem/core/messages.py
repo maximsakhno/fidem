@@ -13,6 +13,7 @@ from fidem.core.effects import (
 from fidem.core.transactions import ReadTransactionEffect, WriteTransactionEffect
 
 __all__ = [
+    "ATOMIC_WRITE_TYPES",
     "QUERY_EFFECT_TYPES",
     "AtomicEffectful",
     "AtomicHandler",
@@ -77,6 +78,8 @@ type AtomicEffectful[ResultT, EventT: Event = Never] = Effectful[
     QueryEffect,
 ]
 """The generator of an atomic handler."""
+ATOMIC_WRITE_TYPES: Final[tuple[type[Effect[Any]], ...]] = (WriteTransactionEffect, ExternalWriteEffect)
+"""Runtime counterpart of the writes `AtomicEffectful` returns."""
 type AtomicHandler[ResultT, EventT: Event = Never] = Callable[..., AtomicEffectful[ResultT, EventT]]
 type StagedEffectful[ResultT, EventT: Event = Never] = Effectful[ResultT, Effect[Any] | EventT]
 """The generator of a staged handler, `EventT` are the events it publishes."""

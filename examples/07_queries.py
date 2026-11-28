@@ -36,7 +36,7 @@ from fidem import (
     effect_handler,
     query_handler,
 )
-from fidem.asyncpg import AsyncpgConnectionDef, AsyncpgTransactionOptions
+from fidem.asyncpg import AsyncpgDatabase, AsyncpgTransactionOptions
 
 DATABASE_URL = environ.get("DATABASE_URL", "postgresql://postgres@localhost:5432/postgres")
 SCHEMA = """
@@ -193,9 +193,9 @@ async def main() -> None:
             handle_get_balance,
             handle_list_transfers,
             handle_record_transfer,
-            pool,
             # Read transactions are repeatable read and write transactions are read committed unless set otherwise.
-            AsyncpgConnectionDef(
+            AsyncpgDatabase(
+                pool,
                 transaction_options={record_transfer: AsyncpgTransactionOptions(isolation="serializable")},
             ),
         ],

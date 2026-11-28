@@ -10,6 +10,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, TypeAliasType, get_origin, overload
 
+from fidem._functions import as_effectful, as_factory, is_plain_function
 from fidem.core.di.core import (
     DependencyName,
     UnsupportedFunctionError,
@@ -18,10 +19,11 @@ from fidem.core.di.core import (
     get_return_type,
 )
 from fidem.core.di.effects import EffectDependencyDef, EffectDependencyLifetime
-from fidem.core.effects import Effect, Effectful, EffectName, EffectVersion
+from fidem.core.effects import Effect, EffectName, EffectVersion
 from fidem.core.environment import EffectDef, EffectMiddleware, EffectMiddlewareDef
 from fidem.core.guards import GuardDef, GuardInputDef
 from fidem.core.messages import (
+    ATOMIC_WRITE_TYPES,
     AtomicEffectful,
     Command,
     Event,
@@ -221,8 +223,15 @@ def _handled_type[HandledT](
 
 
 def _is_atomic(function: Callable[..., object]) -> bool:
-    """Tells an atomic handler from a staged one by the alias of its return type, aliases of them count too."""
+    """Tells an atomic handler from a staged one by its return type.
+
+    A generator function returns `AtomicEffectful` or `StagedEffectful`, aliases of them count too. A plain function
+    returns the write of an atomic handler, a write transaction or an external write, or the result of a staged one.
+    """
     return_type = get_return_type(function)
+    if is_plain_function(function):
+        returned = _annotated_class(return_type)
+        return returned is not None and issubclass(returned, ATOMIC_WRITE_TYPES)
     alias = get_origin(return_type) or return_type
     while isinstance(alias, TypeAliasType):
         if alias is AtomicEffectful:
@@ -284,7 +293,7 @@ class _CommandHandlerMark(_DefinitionMark):
         return definition_type(
             name=declared.name,
             message_type=command_type,
-            handler=function,
+            handler=as_effectful(function),
             version=declared.version,
             middleware_defs=_optional_message_middleware_defs(self.middlewares),
             execution_mode=self.mode,
@@ -298,7 +307,7 @@ class _QueryHandlerMark(_DefinitionMark):
     def resolve(self, function: Any, /) -> QueryDef[Any]:
         return QueryDef(
             message_type=_handled_type(function, Query),
-            handler=function,
+            handler=as_effectful(function),
             middleware_defs=_optional_message_middleware_defs(self.middlewares),
         )
 
@@ -314,7 +323,7 @@ class _EventHandlerMark(_DefinitionMark):
         definition_type = AtomicEventHandlerDef if _is_atomic(function) else StagedEventHandlerDef
         handler_def = definition_type(
             name=self.name or function.__name__,
-            handler=function,
+            handler=as_effectful(function),
             middleware_defs=_optional_message_middleware_defs(self.middlewares),
             execution_mode=self.mode,
         )
@@ -334,7 +343,7 @@ class _GuardMark(_DefinitionMark):
     type: object
 
     def resolve(self, function: Any, /) -> GuardDef[Any]:
-        return GuardDef(guard=function, name=self.name, type=self.type)
+        return GuardDef(guard=as_effectful(function), name=self.name, type=self.type)
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,11 +370,17 @@ class _DependencyMark(_DefinitionMark):
     type: object
 
     def resolve(self, function: Any, /) -> EffectDependencyDef[Any]:
-        return EffectDependencyDef(factory=function, lifetime=self.lifetime, name=self.name, type=self.type)
+        return EffectDependencyDef(
+            factory=as_factory(function),
+            lifetime=self.lifetime,
+            name=self.name,
+            type=self.type,
+        )
 
 
 # ── Decorators ────────────────────────────────────────────
-type _Handler = Callable[..., Effectful[Any, Any]]
+type _Handler = Callable[..., object]
+"""A generator function or a plain function, which `Fidem` makes a generator function of."""
 
 
 @overload
@@ -385,6 +400,7 @@ def command_handler[FunctionT: _Handler](
 ) -> FunctionT | Callable[[FunctionT], FunctionT]:
     """Declares the handler of the command its parameter is annotated with, atomic or staged by its return type.
 
+    A plain function yields no effects: an atomic one returns its write, a staged one returns its result.
     `middlewares` replace the middlewares of `Fidem`, `()` turns them off.
     """
     return _decorate(function, _CommandHandlerMark(middlewares=middlewares, mode=mode))
@@ -403,7 +419,7 @@ def query_handler[FunctionT: _Handler](
     *,
     middlewares: MessageMiddlewares | None = None,
 ) -> FunctionT | Callable[[FunctionT], FunctionT]:
-    """Declares the handler of the query its parameter is annotated with."""
+    """Declares the handler of the query its parameter is annotated with, a plain function yields no effects."""
     return _decorate(function, _QueryHandlerMark(middlewares=middlewares))
 
 
@@ -426,7 +442,8 @@ def event_handler[FunctionT: _Handler](
 ) -> FunctionT | Callable[[FunctionT], FunctionT]:
     """Declares a handler of the event its parameter is annotated with, atomic or staged by its return type.
 
-    The name is stored in the outbox with each delivery, so renaming the function without `name` loses deliveries.
+    A plain function yields no effects as with `command_handler`. The name is stored in the outbox with each
+    delivery, so renaming the function without `name` loses deliveries.
     """
     return _decorate(function, _EventHandlerMark(name=name, middlewares=middlewares, mode=mode))
 
@@ -448,7 +465,7 @@ def guard[FunctionT: _Handler](
 ) -> FunctionT | Callable[[FunctionT], FunctionT]:
     """Declares a guard, the handlers and the middlewares that take its value run only after it.
 
-    The type of the value the guard returns is used when `type` is not set.
+    A plain function checks without effects. The type of the value the guard returns is used when `type` is not set.
     """
     return _decorate(function, _GuardMark(name=name, type=type))
 
@@ -476,7 +493,8 @@ def effect_handler[FunctionT: _AsyncFunction](
     return _decorate(function, _EffectHandlerMark(middlewares=middlewares))
 
 
-type _Factory = Callable[..., AsyncGenerator[Any]]
+type _Factory = Callable[..., AsyncGenerator[Any]] | Callable[..., Awaitable[Any]]
+"""An async generator function or an async function, which `Fidem` makes a factory of."""
 
 
 @overload
@@ -498,7 +516,8 @@ def dependency[FunctionT: _Factory](
 ) -> FunctionT | Callable[[FunctionT], FunctionT]:
     """Declares the factory of a dependency of effect handlers, a service has the `SERVICE` lifetime.
 
-    The type the factory yields is used when `type` is not set.
+    An async generator yields the dependency and closes it after, an async function returns a dependency that needs
+    no closing. The type the factory yields or returns is used when `type` is not set.
     """
     return _decorate(function, _DependencyMark(lifetime=lifetime, name=name, type=type))
 

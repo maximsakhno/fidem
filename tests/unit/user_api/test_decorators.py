@@ -1,6 +1,6 @@
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Never
 
 import pytest
 
@@ -12,13 +12,16 @@ from fidem import (
     Effectful,
     Event,
     ExecutionMode,
+    ExternalWriteEffect,
     InternalEffect,
+    MessageContext,
     MessageMiddlewareEffectful,
     Proceed,
     Query,
     QueryEffect,
     QueryEffectful,
     StagedEffectful,
+    WriteTransactionEffect,
     command,
     command_handler,
     dependency,
@@ -43,12 +46,14 @@ from fidem.core import (
     GuardDef,
     GuardInputDef,
     MessageMiddlewareDef,
+    MissingAnnotationError,
     QueryDef,
     StagedCommandDef,
     StagedEventHandlerDef,
     UnsupportedFunctionError,
     UnsupportedReturnTypeError,
 )
+from fidem.core.di.core import get_parameters, get_return_type
 from fidem.core.environment import CallNext
 from fidem.core.operation_engine.instructions import EffectCall
 from fidem.errors import AlreadyDeclaredError, HandledTypeError, UndeclaredClassError
@@ -82,7 +87,19 @@ class LoadEffect(InternalEffect[str]):
     pass
 
 
+@effect("send")
+@dataclass(frozen=True, slots=True)
+class SendEffect(ExternalWriteEffect[str]):
+    text: str
+
+
 type SaveEffectful = AtomicEffectful[str]
+
+
+def assert_returns(generator: Generator[object, object, object], value: object) -> None:
+    with pytest.raises(StopIteration) as exc_info:
+        next(generator)
+    assert exc_info.value.value == value
 
 
 def logging_middleware() -> MessageMiddlewareEffectful[object]:
@@ -233,6 +250,53 @@ class TestCommandHandler:
             declared_definition(save)
 
 
+class TestPlainCommandHandler:
+    def test_defines_staged_command_of_plain_function_with_result(self) -> None:
+        @command_handler
+        def save(command: SaveCommand) -> str:
+            return command.value
+
+        definition = declared_definition(save)
+
+        assert isinstance(definition, StagedCommandDef)
+        assert_returns(definition.handler(command=SaveCommand("value")), "value")
+
+    def test_defines_atomic_command_of_plain_function_with_write_transaction(self) -> None:
+        @command_handler
+        def save(command: SaveCommand) -> WriteTransactionEffect[str]:
+            raise NotImplementedError
+
+        assert isinstance(declared_definition(save), AtomicCommandDef)
+
+    def test_defines_atomic_command_of_plain_function_with_external_write(self) -> None:
+        @command_handler
+        def save(command: SaveCommand) -> SendEffect:
+            return SendEffect(command.value)
+
+        definition = declared_definition(save)
+
+        assert isinstance(definition, AtomicCommandDef)
+        assert_returns(definition.handler(command=SaveCommand("value")), SendEffect("value"))
+
+    def test_keeps_signature_of_plain_function_for_dependency_injection(self) -> None:
+        @command_handler
+        def save(command: SaveCommand, context: MessageContext) -> str:
+            raise NotImplementedError
+
+        definition = declared_definition(save)
+
+        assert isinstance(definition, StagedCommandDef)
+        assert get_parameters(definition.handler) == {"command": SaveCommand, "context": MessageContext}
+
+    def test_raises_unsupported_return_type_error_for_async_function(self) -> None:
+        @command_handler
+        async def save(command: SaveCommand) -> str:
+            raise NotImplementedError
+
+        with pytest.raises(UnsupportedReturnTypeError):
+            declared_definition(save)
+
+
 class TestQueryHandler:
     def test_defines_query(self) -> None:
         @query_handler(middlewares=[logging_middleware])
@@ -334,6 +398,64 @@ class TestEffectHandler:
         assert exc_info.value.args == (load, UndeclaredEffect)
 
 
+class TestPlainFunctions:
+    def test_makes_generator_of_plain_query_handler(self) -> None:
+        @query_handler
+        def get(query: GetQuery) -> str:
+            return "value"
+
+        definition = declared_definition(get)
+
+        assert isinstance(definition, QueryDef)
+        assert_returns(definition.handler(query=GetQuery()), "value")
+
+    def test_makes_generator_of_plain_event_handler(self) -> None:
+        @event_handler
+        def record(event: SavedEvent) -> None:
+            pass
+
+        definition = declared_definition(record)
+
+        assert isinstance(definition, EventDef)
+        assert isinstance(definition.handler_defs[0], StagedEventHandlerDef)
+        assert_returns(definition.handler_defs[0].handler(event=SavedEvent("value")), None)
+
+    def test_makes_generator_of_plain_guard_with_its_value_type(self) -> None:
+        @guard
+        def current_user(command: SaveCommand) -> str:
+            return command.value
+
+        definition = declared_definition(current_user)
+
+        assert isinstance(definition, GuardDef)
+        assert get_return_type(definition.guard) == Effectful[str, Never]
+        assert_returns(definition.guard(command=SaveCommand("value")), "value")
+
+
+class TestPlainFunctionWithoutReturnType:
+    def test_raises_missing_annotation_error(self) -> None:
+        @guard
+        def current_user(command: SaveCommand):
+            raise NotImplementedError
+
+        with pytest.raises(MissingAnnotationError) as exc_info:
+            declared_definition(current_user)
+
+        assert exc_info.value.args == (current_user, "return")
+
+
+class TestAsyncGuard:
+    def test_keeps_async_function_for_core_to_reject(self) -> None:
+        @guard
+        async def current_user(command: SaveCommand) -> str:
+            raise NotImplementedError
+
+        definition = declared_definition(current_user)
+
+        assert isinstance(definition, GuardDef)
+        assert definition.guard is current_user
+
+
 class TestDependency:
     def test_defines_dependency(self) -> None:
         @dependency(lifetime=EffectDependencyLifetime.SERVICE, name="named", type=object)
@@ -353,6 +475,18 @@ class TestDependency:
             yield "resource"
 
         assert declared_definition(resource) == EffectDependencyDef(factory=resource)
+
+    async def test_makes_factory_of_async_function(self) -> None:
+        @dependency
+        async def settings(name: str) -> str:
+            return f"settings of {name}"
+
+        definition = declared_definition(settings)
+
+        assert isinstance(definition, EffectDependencyDef)
+        assert get_parameters(definition.factory) == {"name": str}
+        assert get_return_type(definition.factory) == AsyncGenerator[str]
+        assert [value async for value in definition.factory(name="app")] == ["settings of app"]
 
 
 class TestMiddleware:
