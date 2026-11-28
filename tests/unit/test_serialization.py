@@ -9,10 +9,8 @@ import pytest
 from msgspec import Struct
 from pydantic import BaseModel, Field
 
-from fidem.messages import Command
-from fidem.msgspec import MsgspecSerializer
-from fidem.pydantic import PydanticSerializer
-from fidem.serialization import (
+from fidem.core.messages import Command
+from fidem.core.serialization import (
     Codec,
     DeserializationError,
     JsonValue,
@@ -20,6 +18,8 @@ from fidem.serialization import (
     Serializer,
     UnsupportedTypeError,
 )
+from fidem.msgspec import MsgspecSerializer
+from fidem.pydantic import PydanticSerializer
 from tests.ids import type_name
 
 

@@ -6,14 +6,14 @@ from typing import Any, Final
 
 import pytest
 
-from fidem.effects import InternalEffect
-from fidem.environment import CallNext, EffectDef, EffectMiddlewareDef, EnvironmentImpl
+from fidem.core.effects import InternalEffect
+from fidem.core.environment import CallNext, EffectDef, EffectMiddlewareDef, EnvironmentImpl
+from fidem.core.messages import Event, MessageContext, StagedEffectful
+from fidem.core.operation_engine.definitions import EventDef, StagedCommandDef, StagedEventHandlerDef
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.operation_engine.instructions import EffectCall
+from fidem.core.outbox import OutboxDispatcherOptions, RetryPolicy, WriteOutboxEffect
 from fidem.memory import MemoryOutbox, MemoryOutboxRow, OutboxStatus
-from fidem.messages import Event, MessageContext, StagedEffectful
-from fidem.operation_engine.definitions import EventDef, StagedCommandDef, StagedEventHandlerDef
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.operation_engine.instructions import EffectCall
-from fidem.outbox import OutboxDispatcherOptions, RetryPolicy, WriteOutboxEffect
 from tests.messages import TestCommand
 
 

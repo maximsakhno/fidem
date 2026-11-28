@@ -3,21 +3,21 @@ from typing import Any
 
 import pytest
 
-from fidem.di.core import DependencyNotFoundError, UnsupportedFunctionError
-from fidem.effects import Effect, Effectful
-from fidem.guards import GuardDef
-from fidem.messages import MessageContext, QueryEffect
-from fidem.operation_engine.definitions import (
+from fidem.core.di.core import DependencyNotFoundError, UnsupportedFunctionError
+from fidem.core.effects import Effect, Effectful
+from fidem.core.guards import GuardDef
+from fidem.core.messages import MessageContext, QueryEffect
+from fidem.core.operation_engine.definitions import (
     AtomicCommandDef,
     MessageMiddlewareDef,
     MessageMiddlewareEffectful,
     Proceed,
     StagedCommandDef,
 )
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.operation_engine.errors import DuplicateMessageMiddlewareDefError, UnsupportedEffectError
-from fidem.testing import YieldStep, assert_generator
-from fidem.transactions import WriteTransaction, WriteTransactionEffectful
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.operation_engine.errors import DuplicateMessageMiddlewareDefError, UnsupportedEffectError
+from fidem.core.testing import YieldStep, assert_generator
+from fidem.core.transactions import WriteTransaction, WriteTransactionEffectful
 from tests.effects import TestControlEffect, TestExternalWriteEffect, TestInternalEffect
 from tests.ids import type_name
 from tests.messages import TestCommand, TestEvent

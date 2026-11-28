@@ -156,7 +156,7 @@ ignore = [
 # Tests use asserts, fake secrets, random and fakes with unused arguments.
 "tests/**" = ["S101", "S105", "S106", "S311", "ARG"]
 # Assertion helpers for library users' tests.
-"src/fidem/testing.py" = ["S101", "PT017"]
+"src/fidem/core/testing.py" = ["S101", "PT017"]
 # Examples print results, implement handlers with a fixed signature and use fake secrets.
 "examples/**" = ["T201", "ARG", "S105", "S106"]
 
@@ -166,7 +166,7 @@ ignore-variadic-names = true
 
 [tool.ruff.lint.flake8-bugbear]
 # Frozen options are safe defaults, but B008 sees that only for the classes of the same module.
-extend-immutable-calls = ["fidem.outbox.OutboxDispatcherOptions"]
+extend-immutable-calls = ["fidem.core.outbox.OutboxDispatcherOptions"]
 
 [tool.ruff.lint.isort]
 combine-as-imports = true

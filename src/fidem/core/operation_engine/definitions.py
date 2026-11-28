@@ -3,20 +3,19 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
 
-from fidem.effects import ControlEffect, Effectful, HandledEffect
-from fidem.messages import (
+from fidem.core.effects import ControlEffect, Effectful, HandledEffect
+from fidem.core.messages import (
     AtomicHandler,
     Command,
     Event,
     EventHandlerName,
     EventVersion,
-    Message,
     MessageName,
     Query,
     QueryHandler,
     StagedHandler,
 )
-from fidem.transactions import ReadTransactionEffect, WriteTransactionEffect
+from fidem.core.transactions import ReadTransactionEffect, WriteTransactionEffect
 
 __all__ = [
     "AnyEventHandlerDef",
@@ -26,7 +25,6 @@ __all__ = [
     "EventDef",
     "EventHandlerDef",
     "ExecutionMode",
-    "MessageDef",
     "MessageMiddleware",
     "MessageMiddlewareDef",
     "MessageMiddlewareEffect",
@@ -65,30 +63,37 @@ class MessageMiddlewareDef:
 
 
 @dataclass(frozen=True, slots=True)
-class MessageDef[MessageT: Message[Any], MessageHandlerT: Callable[..., Effectful[Any, Any]]]:
+class _CommandDef[ResultT, CommandHandlerT: Callable[..., Effectful[Any, Any]]]:
     name: MessageName
-    message_type: type[MessageT]
-    handler: MessageHandlerT
+    """A stable name for serialization and storage."""
+    message_type: type[Command[ResultT]]
+    handler: CommandHandlerT
     middleware_defs: Sequence[MessageMiddlewareDef] | None = None
     """Replace the engine middlewares, `None` keeps them."""
-
-
-@dataclass(frozen=True, slots=True)
-class AtomicCommandDef[ResultT](MessageDef[Command[ResultT], AtomicHandler[ResultT, Event]]):
     execution_mode: ExecutionMode = ExecutionMode.EPHEMERAL
 
 
 @dataclass(frozen=True, slots=True)
-class StagedCommandDef[ResultT](MessageDef[Command[ResultT], StagedHandler[ResultT, Event]]):
-    execution_mode: ExecutionMode = ExecutionMode.EPHEMERAL
+class AtomicCommandDef[ResultT](_CommandDef[ResultT, AtomicHandler[ResultT, Event]]):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class StagedCommandDef[ResultT](_CommandDef[ResultT, StagedHandler[ResultT, Event]]):
+    pass
 
 
 type CommandDef[ResultT] = StagedCommandDef[ResultT] | AtomicCommandDef[ResultT]
 
 
 @dataclass(frozen=True, slots=True)
-class QueryDef[ResultT](MessageDef[Query[ResultT], QueryHandler[ResultT]]):
-    pass
+class QueryDef[ResultT]:
+    """A query has no name: it is never serialized, and its type tells it from the others."""
+
+    message_type: type[Query[ResultT]]
+    handler: QueryHandler[ResultT]
+    middleware_defs: Sequence[MessageMiddlewareDef] | None = None
+    """Replace the engine middlewares, `None` keeps them."""
 
 
 @dataclass(frozen=True, slots=True)

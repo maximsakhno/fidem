@@ -3,16 +3,16 @@ from unittest.mock import Mock
 
 import pytest
 
-from fidem.di.effects import EffectDependencyDef
-from fidem.effects import InternalEffect
-from fidem.environment import (
+from fidem.core.di.effects import EffectDependencyDef
+from fidem.core.effects import InternalEffect
+from fidem.core.environment import (
     DuplicateEffectDefError,
     EffectDef,
     EnvironmentAlreadyStartedError,
     EnvironmentImpl,
     EnvironmentNotStartedError,
 )
-from fidem.operation_engine.instructions import OperationEngine
+from fidem.core.operation_engine.instructions import OperationEngine
 from tests.effects import TestInternalEffect
 from tests.messages import TestCommand
 from tests.stubs import GeneratorFunctionStub

@@ -4,7 +4,7 @@ from collections.abc import AsyncGenerator, MutableMapping
 from dataclasses import dataclass, replace
 from typing import Any, Final
 
-from fidem import (
+from fidem.core import (
     Command,
     DatabaseReadEffect,
     DatabaseWriteEffect,

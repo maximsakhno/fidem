@@ -6,9 +6,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from fidem.environment import Environment
-from fidem.messages import Event, MessageId
-from fidem.outbox import OutboxDelivery, OutboxDispatcher, OutboxDispatcherOptions, OutboxStore, RetryPolicy
+from fidem.core.environment import Environment
+from fidem.core.messages import Event, MessageId
+from fidem.core.outbox import OutboxDelivery, OutboxDispatcher, OutboxDispatcherOptions, OutboxStore, RetryPolicy
 from tests.messages import TestEvent
 
 

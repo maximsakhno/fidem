@@ -2,7 +2,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Final, Never
 
-from fidem.effects import (
+from fidem.core.effects import (
     DatabaseReadEffect,
     Effect,
     Effectful,
@@ -10,7 +10,7 @@ from fidem.effects import (
     ExternalWriteEffect,
     InternalEffect,
 )
-from fidem.transactions import ReadTransactionEffect, WriteTransactionEffect
+from fidem.core.transactions import ReadTransactionEffect, WriteTransactionEffect
 
 __all__ = [
     "QUERY_EFFECT_TYPES",

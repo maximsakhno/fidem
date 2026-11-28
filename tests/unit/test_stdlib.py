@@ -2,12 +2,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from fidem.effects import InternalEffect
-from fidem.environment import EnvironmentImpl
-from fidem.messages import Command, StagedEffectful
-from fidem.operation_engine.definitions import StagedCommandDef
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.stdlib import STDLIB_EFFECT_DEFS, NewUuidEffect, NowEffect, RandomBytesEffect, RandomIntEffect
+from fidem.core.effects import InternalEffect
+from fidem.core.environment import EnvironmentImpl
+from fidem.core.messages import Command, StagedEffectful
+from fidem.core.operation_engine.definitions import StagedCommandDef
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.stdlib import STDLIB_EFFECT_DEFS, NewUuidEffect, NowEffect, RandomBytesEffect, RandomIntEffect
 
 
 @dataclass(frozen=True, slots=True)

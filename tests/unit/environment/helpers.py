@@ -3,10 +3,10 @@ from dataclasses import dataclass
 from typing import Any
 from unittest.mock import Mock
 
-from fidem.effects import EffectContext
-from fidem.messages import MessageContext
-from fidem.operation_engine.definitions import EventDef
-from fidem.operation_engine.instructions import (
+from fidem.core.effects import EffectContext
+from fidem.core.messages import MessageContext
+from fidem.core.operation_engine.definitions import EventDef
+from fidem.core.operation_engine.instructions import (
     CallEffectHandlerInstruction,
     EffectCall,
     ExecutionPlan,

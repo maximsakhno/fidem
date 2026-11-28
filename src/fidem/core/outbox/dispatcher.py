@@ -10,8 +10,8 @@ from traceback import format_exception
 from types import TracebackType
 from typing import Any, Self
 
-from fidem.environment import Environment
-from fidem.messages import Event, EventHandlerName, MessageId, MessageName
+from fidem.core.environment import Environment
+from fidem.core.messages import Event, EventHandlerName, MessageId, MessageName
 
 __all__ = [
     "OutboxDelivery",

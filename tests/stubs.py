@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from fidem.testing import RaiseStep, YieldStep
+from fidem.core.testing import RaiseStep, YieldStep
 
 
 class GeneratorFunctionStub:

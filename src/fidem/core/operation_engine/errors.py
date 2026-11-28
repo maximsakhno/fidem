@@ -1,10 +1,16 @@
 from collections.abc import Collection
 from typing import Any
 
-from fidem.effects import Effect
-from fidem.errors import Error
-from fidem.messages import Event, EventHandlerName, Message
-from fidem.operation_engine.definitions import AnyEventHandlerDef, CommandDef, EventDef, MessageMiddlewareDef, QueryDef
+from fidem.core.effects import Effect
+from fidem.core.errors import Error
+from fidem.core.messages import Event, EventHandlerName, Message
+from fidem.core.operation_engine.definitions import (
+    AnyEventHandlerDef,
+    CommandDef,
+    EventDef,
+    MessageMiddlewareDef,
+    QueryDef,
+)
 
 __all__ = [
     "DuplicateCommandDefError",

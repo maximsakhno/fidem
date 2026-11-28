@@ -3,10 +3,10 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
-from fidem.effects import Effect, EffectContext, Effectful, HandledEffect
-from fidem.messages import Command, Event, EventHandlerName, Message, MessageContext, Query
-from fidem.operation_engine.definitions import EventDef
-from fidem.transactions import AnyTransaction
+from fidem.core.effects import Effect, EffectContext, Effectful, HandledEffect
+from fidem.core.messages import Command, Event, EventHandlerName, Message, MessageContext, Query
+from fidem.core.operation_engine.definitions import EventDef
+from fidem.core.transactions import AnyTransaction
 
 __all__ = [
     "CallEffectHandlerInstruction",

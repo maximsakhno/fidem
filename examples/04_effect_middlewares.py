@@ -5,7 +5,7 @@ from itertools import count
 from time import perf_counter
 from typing import Final
 
-from fidem import (
+from fidem.core import (
     CallNext,
     Command,
     EffectCall,

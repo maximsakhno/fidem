@@ -4,9 +4,9 @@ from functools import partial
 from random import Random
 from typing import Any, Final, Self
 
-from fidem._validation import check_unique
-from fidem.di.core import DependencyKey, make_message_dependencies
-from fidem.effects import (
+from fidem.core._validation import check_unique
+from fidem.core.di.core import DependencyKey, make_message_dependencies
+from fidem.core.effects import (
     DatabaseEffect,
     DatabaseReadEffect,
     Effect,
@@ -17,9 +17,9 @@ from fidem.effects import (
     ExternalWriteEffect,
     InternalEffect,
 )
-from fidem.guards import GuardContainer, GuardDef, GuardedFunction, GuardInputDef, GuardResolutionStep, GuardValues
-from fidem.messages import QUERY_EFFECT_TYPES, Command, Event, EventHandlerName, Message, MessageContext, Query
-from fidem.operation_engine.definitions import (
+from fidem.core.guards import GuardContainer, GuardDef, GuardedFunction, GuardInputDef, GuardResolutionStep, GuardValues
+from fidem.core.messages import QUERY_EFFECT_TYPES, Command, Event, EventHandlerName, Message, MessageContext, Query
+from fidem.core.operation_engine.definitions import (
     AnyEventHandlerDef,
     AtomicCommandDef,
     AtomicEventHandlerDef,
@@ -33,7 +33,7 @@ from fidem.operation_engine.definitions import (
     StagedCommandDef,
     StagedEventHandlerDef,
 )
-from fidem.operation_engine.errors import (
+from fidem.core.operation_engine.errors import (
     DuplicateCommandDefError,
     DuplicateEventDefError,
     DuplicateEventHandlerDefError,
@@ -45,7 +45,7 @@ from fidem.operation_engine.errors import (
     UnsupportedAtomicResultError,
     UnsupportedEffectError,
 )
-from fidem.operation_engine.instructions import (
+from fidem.core.operation_engine.instructions import (
     CallEffectHandlerInstruction,
     EffectCall,
     ExecutionPlan,
@@ -53,8 +53,8 @@ from fidem.operation_engine.instructions import (
     OperationEngine,
     RunTransactionInstruction,
 )
-from fidem.outbox import OutboxEvent, WriteOutboxEffect
-from fidem.transactions import (
+from fidem.core.outbox import OutboxEvent, WriteOutboxEffect
+from fidem.core.transactions import (
     IMPLICIT_READ_TRANSACTION,
     IMPLICIT_WRITE_TRANSACTION,
     AnyTransaction,

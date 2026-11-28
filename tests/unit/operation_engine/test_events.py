@@ -3,11 +3,11 @@ from typing import Any
 
 import pytest
 
-from fidem.di.core import DependencyNotFoundError, UnsupportedFunctionError
-from fidem.effects import Effect, Effectful
-from fidem.guards import GuardDef
-from fidem.messages import AtomicEffectful, Event, MessageContext, QueryEffect, StagedEffectful, StagedHandler
-from fidem.operation_engine.definitions import (
+from fidem.core.di.core import DependencyNotFoundError, UnsupportedFunctionError
+from fidem.core.effects import Effect, Effectful
+from fidem.core.guards import GuardDef
+from fidem.core.messages import AtomicEffectful, Event, MessageContext, QueryEffect, StagedEffectful, StagedHandler
+from fidem.core.operation_engine.definitions import (
     AtomicCommandDef,
     AtomicEventHandlerDef,
     EventDef,
@@ -18,8 +18,8 @@ from fidem.operation_engine.definitions import (
     StagedCommandDef,
     StagedEventHandlerDef,
 )
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.operation_engine.errors import (
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.operation_engine.errors import (
     DuplicateEventDefError,
     DuplicateEventHandlerDefError,
     EventHandlerNotDefinedError,
@@ -27,9 +27,13 @@ from fidem.operation_engine.errors import (
     MessageNotDefinedError,
     UnsupportedEffectError,
 )
-from fidem.operation_engine.instructions import CallEffectHandlerInstruction, ExecutionPlan, RunTransactionInstruction
-from fidem.outbox import OutboxEvent, WriteOutboxEffect
-from fidem.transactions import IMPLICIT_WRITE_TRANSACTION, WriteTransaction, WriteTransactionEffectful
+from fidem.core.operation_engine.instructions import (
+    CallEffectHandlerInstruction,
+    ExecutionPlan,
+    RunTransactionInstruction,
+)
+from fidem.core.outbox import OutboxEvent, WriteOutboxEffect
+from fidem.core.transactions import IMPLICIT_WRITE_TRANSACTION, WriteTransaction, WriteTransactionEffectful
 from tests.effects import TestDatabaseWriteEffect, TestInternalEffect
 from tests.messages import TestCommand, TestEvent
 from tests.unit.operation_engine.helpers import (

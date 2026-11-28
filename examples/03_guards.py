@@ -2,7 +2,7 @@ from asyncio import run
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field, replace
 
-from fidem import (
+from fidem.core import (
     Command,
     DatabaseReadEffect,
     DatabaseWriteEffect,

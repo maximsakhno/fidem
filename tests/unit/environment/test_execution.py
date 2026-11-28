@@ -4,14 +4,14 @@ from typing import Any
 
 import pytest
 
-from fidem.effects import Effect, EffectContext, Effectful
-from fidem.environment import EffectDef, EffectNotDefinedError, EnvironmentImpl
-from fidem.guards import GuardDef
-from fidem.messages import MessageContext, QueryEffect
-from fidem.operation_engine.definitions import StagedCommandDef
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.operation_engine.instructions import ExecutionPlan, Instruction
-from fidem.testing import YieldStep
+from fidem.core.effects import Effect, EffectContext, Effectful
+from fidem.core.environment import EffectDef, EffectNotDefinedError, EnvironmentImpl
+from fidem.core.guards import GuardDef
+from fidem.core.messages import MessageContext, QueryEffect
+from fidem.core.operation_engine.definitions import StagedCommandDef
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.operation_engine.instructions import ExecutionPlan, Instruction
+from fidem.core.testing import YieldStep
 from tests.effects import TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
 from tests.messages import TestCommand
 from tests.stubs import GeneratorFunctionStub

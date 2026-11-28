@@ -8,12 +8,12 @@ from typing import Any, Final, NamedTuple, Self, cast
 from asyncpg import Connection, Pool, Record
 
 from fidem.asyncpg.migrations import MigrationSection, load_section
-from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
-from fidem.effects import EffectId
-from fidem.environment import EffectDef, EffectMiddlewareDef, Environment
-from fidem.messages import Event, EventHandlerName, EventVersion, MessageId, MessageName
-from fidem.operation_engine.definitions import EventDef
-from fidem.outbox import (
+from fidem.core.di.effects import EffectDependencyDef, EffectDependencyLifetime
+from fidem.core.effects import EffectId
+from fidem.core.environment import EffectDef, EffectMiddlewareDef, Environment
+from fidem.core.messages import Event, EventHandlerName, EventVersion, MessageId, MessageName
+from fidem.core.operation_engine.definitions import EventDef
+from fidem.core.outbox import (
     OutboxDelivery,
     OutboxDispatcher,
     OutboxDispatcherOptions,
@@ -21,7 +21,7 @@ from fidem.outbox import (
     WriteOutboxEffect,
     wait_for_change,
 )
-from fidem.serialization import Codec, Serializer
+from fidem.core.serialization import Codec, Serializer
 
 __all__ = [
     "OUTBOX_SECTION",

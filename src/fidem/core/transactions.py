@@ -2,12 +2,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Final, Generic, Never, ParamSpec, TypeVar
 
-from fidem._functions import check_generator_function
-from fidem.effects import ControlEffect, DatabaseEffect, DatabaseReadEffect, Effect, Effectful
+from fidem.core._functions import check_generator_function
+from fidem.core.effects import ControlEffect, DatabaseEffect, DatabaseReadEffect, Effect, Effectful
 
 if TYPE_CHECKING:
-    # Bounds of type parameters are evaluated lazily, and fidem.messages imports this module.
-    from fidem.messages import Event
+    # Bounds of type parameters are evaluated lazily, and fidem.core.messages imports this module.
+    from fidem.core.messages import Event
 
 __all__ = [
     "IMPLICIT_READ_TRANSACTION",

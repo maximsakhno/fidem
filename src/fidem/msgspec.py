@@ -3,7 +3,7 @@ from typing import Any, ClassVar, cast, override
 from msgspec import convert, to_builtins
 from msgspec.json import Decoder, Encoder, schema
 
-from fidem.serialization import (
+from fidem.core.serialization import (
     Codec,
     DeserializationError,
     JsonSchema,

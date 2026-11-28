@@ -3,12 +3,12 @@ from typing import Any
 
 import pytest
 
-from fidem.effects import Effect, Effectful
-from fidem.guards import GuardDef
-from fidem.messages import MessageContext, QueryEffect
-from fidem.operation_engine.definitions import Proceed
-from fidem.operation_engine.errors import UnsupportedEffectError
-from fidem.testing import YieldStep, assert_generator
+from fidem.core.effects import Effect, Effectful
+from fidem.core.guards import GuardDef
+from fidem.core.messages import MessageContext, QueryEffect
+from fidem.core.operation_engine.definitions import Proceed
+from fidem.core.operation_engine.errors import UnsupportedEffectError
+from fidem.core.testing import YieldStep, assert_generator
 from tests.effects import TestControlEffect, TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
 from tests.ids import type_name
 from tests.messages import TestCommand, TestEvent

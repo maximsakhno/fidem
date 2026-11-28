@@ -8,9 +8,9 @@ from types import TracebackType
 from typing import Any, ClassVar, Final, Self
 from uuid import uuid4
 
-from fidem._validation import check_unique
-from fidem.di.core import DependencyKey, UnsupportedFunctionError
-from fidem.di.effects import (
+from fidem.core._validation import check_unique
+from fidem.core.di.core import DependencyKey, UnsupportedFunctionError
+from fidem.core.di.effects import (
     EffectDependencyContainer,
     EffectDependencyDef,
     EffectDependencyLifetime,
@@ -18,11 +18,11 @@ from fidem.di.effects import (
     Scope,
     Scopes,
 )
-from fidem.effects import DatabaseEffect, Effect
-from fidem.errors import Error
-from fidem.messages import Command, Event, EventHandlerName, Message, MessageContext, MessageId, Query
-from fidem.operation_engine.definitions import EventDef
-from fidem.operation_engine.instructions import (
+from fidem.core.effects import DatabaseEffect, Effect
+from fidem.core.errors import Error
+from fidem.core.messages import Command, Event, EventHandlerName, Message, MessageContext, MessageId, Query
+from fidem.core.operation_engine.definitions import EventDef
+from fidem.core.operation_engine.instructions import (
     CallEffectHandlerInstruction,
     EffectCall,
     ExecutionPlan,
@@ -30,7 +30,7 @@ from fidem.operation_engine.instructions import (
     OperationEngine,
     RunTransactionInstruction,
 )
-from fidem.transactions import AnyTransaction, TransactionContext
+from fidem.core.transactions import AnyTransaction, TransactionContext
 
 __all__ = [
     "CallNext",

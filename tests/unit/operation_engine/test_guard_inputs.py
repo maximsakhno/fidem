@@ -4,9 +4,9 @@ from typing import Any
 
 import pytest
 
-from fidem.di.core import DependencyNotFoundError
-from fidem.effects import Effect, Effectful
-from fidem.guards import (
+from fidem.core.di.core import DependencyNotFoundError
+from fidem.core.effects import Effect, Effectful
+from fidem.core.guards import (
     AmbiguousGuardInputError,
     Guard,
     GuardDef,
@@ -14,16 +14,16 @@ from fidem.guards import (
     GuardInputNotDefinedError,
     MissingGuardInputError,
 )
-from fidem.messages import QueryEffect
-from fidem.operation_engine.definitions import (
+from fidem.core.messages import QueryEffect
+from fidem.core.operation_engine.definitions import (
     EventDef,
     MessageMiddlewareDef,
     MessageMiddlewareEffectful,
     Proceed,
     StagedEventHandlerDef,
 )
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.testing import YieldStep, assert_generator
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.testing import YieldStep, assert_generator
 from tests.effects import TestInternalEffect
 from tests.messages import TestCommand, TestEvent, TestQuery
 from tests.stubs import run
