@@ -19,11 +19,11 @@ __all__ = [
     "Command",
     "Event",
     "EventHandlerName",
-    "EventVersion",
     "Message",
     "MessageContext",
     "MessageId",
     "MessageName",
+    "MessageVersion",
     "Query",
     "QueryEffect",
     "QueryEffectful",
@@ -39,7 +39,7 @@ class Message[ResultT](Effect[ResultT]):
 
 type MessageId = str
 type MessageName = str
-type EventVersion = int
+type MessageVersion = int
 type EventHandlerName = str
 
 

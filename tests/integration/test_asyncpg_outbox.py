@@ -218,8 +218,8 @@ def make_environment(pool: Pool, command_defs: Collection[CommandDef[Any]]) -> E
     return EnvironmentImpl(
         operation_engine=OperationEngineImpl(command_defs=command_defs, event_defs=EVENT_DEFS),
         effect_defs=[
-            EffectDef(SaveItemEffect, handle_save_item),
-            EffectDef(FailEffect, handle_fail),
+            EffectDef("save_item", SaveItemEffect, handle_save_item),
+            EffectDef("fail", FailEffect, handle_fail),
             # A process that only writes events does not start the dispatcher.
             *AsyncpgOutbox().effect_defs,
         ],

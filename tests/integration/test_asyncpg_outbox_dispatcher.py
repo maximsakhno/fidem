@@ -106,7 +106,7 @@ def make_environment(
             command_defs=[StagedCommandDef("test", TestCommand, publish)],
             event_defs=[make_event_def()],
         ),
-        effect_defs=[EffectDef(WorkEffect, work.handle), *outbox.effect_defs],
+        effect_defs=[EffectDef("work", WorkEffect, work.handle), *outbox.effect_defs],
         dependency_defs=[
             EffectDependencyDef(shared_pool),
             EffectDependencyDef(serializer),

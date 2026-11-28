@@ -1,9 +1,31 @@
-"""The API of an application on fidem: messages, effects, transactions and the errors it catches.
+"""The API of an application on fidem: `Fidem`, decorators, messages, effects, transactions and runtime errors.
 
-The internals and the declarations the user API builds on are in `fidem.core`.
+The internals and the definitions the decorators reduce to are in `fidem.core`.
 """
 
+from fidem._bundle import (
+    Bundle,
+    Definition,
+)
+from fidem._decorators import (
+    command,
+    command_handler,
+    dependency,
+    effect,
+    effect_handler,
+    effect_middleware,
+    event,
+    event_handler,
+    guard,
+    guard_input,
+    middleware,
+    query_handler,
+)
+from fidem._fidem import (
+    Fidem,
+)
 from fidem.core.di.effects import (
+    EffectDependencyLifetime,
     ScopeClosedError,
 )
 from fidem.core.effects import (
@@ -14,6 +36,8 @@ from fidem.core.effects import (
     EffectContext,
     Effectful,
     EffectId,
+    EffectName,
+    EffectVersion,
     ExternalEffect,
     ExternalReadEffect,
     ExternalWriteEffect,
@@ -49,6 +73,8 @@ from fidem.core.messages import (
     StagedEffectful,
 )
 from fidem.core.operation_engine.definitions import (
+    ExecutionMode,
+    MessageMiddleware,
     MessageMiddlewareEffectful,
     Proceed,
 )
@@ -84,31 +110,39 @@ from fidem.core.transactions import (
 __all__ = [
     "AmbiguousGuardInputError",
     "AtomicEffectful",
+    "Bundle",
     "CallNext",
     "Command",
     "DatabaseEffect",
     "DatabaseReadEffect",
     "DatabaseWriteEffect",
+    "Definition",
     "Effect",
     "EffectCall",
     "EffectContext",
+    "EffectDependencyLifetime",
     "EffectId",
     "EffectMiddleware",
+    "EffectName",
     "EffectNotDefinedError",
+    "EffectVersion",
     "Effectful",
     "EnvironmentAlreadyStartedError",
     "EnvironmentNotStartedError",
     "Error",
     "Event",
     "EventNotDefinedError",
+    "ExecutionMode",
     "ExternalEffect",
     "ExternalReadEffect",
     "ExternalWriteEffect",
+    "Fidem",
     "GuardInputNotDefinedError",
     "InternalEffect",
     "Message",
     "MessageContext",
     "MessageId",
+    "MessageMiddleware",
     "MessageMiddlewareEffectful",
     "MessageNotDefinedError",
     "MissingGuardInputError",
@@ -135,4 +169,16 @@ __all__ = [
     "WriteTransaction",
     "WriteTransactionEffect",
     "WriteTransactionEffectful",
+    "command",
+    "command_handler",
+    "dependency",
+    "effect",
+    "effect_handler",
+    "effect_middleware",
+    "event",
+    "event_handler",
+    "guard",
+    "guard_input",
+    "middleware",
+    "query_handler",
 ]

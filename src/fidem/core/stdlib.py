@@ -64,8 +64,8 @@ async def _random_bytes(effect: RandomBytesEffect) -> bytes:
 
 
 STDLIB_EFFECT_DEFS: Final[Sequence[EffectDef[Any]]] = (
-    EffectDef(NowEffect, _now),
-    EffectDef(NewUuidEffect, _new_uuid),
-    EffectDef(RandomIntEffect, _random_int),
-    EffectDef(RandomBytesEffect, _random_bytes),
+    EffectDef("fidem.now", NowEffect, _now),
+    EffectDef("fidem.new_uuid", NewUuidEffect, _new_uuid),
+    EffectDef("fidem.random_int", RandomIntEffect, _random_int),
+    EffectDef("fidem.random_bytes", RandomBytesEffect, _random_bytes),
 )

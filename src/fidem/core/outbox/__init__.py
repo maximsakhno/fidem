@@ -6,9 +6,10 @@ from fidem.core.outbox.dispatcher import (
     RetryPolicy,
     wait_for_change,
 )
-from fidem.core.outbox.writing import OutboxEvent, WriteOutboxEffect
+from fidem.core.outbox.writing import WRITE_OUTBOX_EFFECT_NAME, OutboxEvent, WriteOutboxEffect
 
 __all__ = [
+    "WRITE_OUTBOX_EFFECT_NAME",
     "OutboxDelivery",
     "OutboxDispatcher",
     "OutboxDispatcherOptions",

@@ -259,8 +259,8 @@ class TestTransactions:
         return EnvironmentImpl(
             operation_engine=operation_engine,
             effect_defs=[
-                EffectDef(TestDatabaseReadEffect, handler, middleware_defs),
-                EffectDef(TestDatabaseWriteEffect, handler, middleware_defs),
+                EffectDef("test_database_read", TestDatabaseReadEffect, handler, middleware_defs=middleware_defs),
+                EffectDef("test_database_write", TestDatabaseWriteEffect, handler, middleware_defs=middleware_defs),
             ],
             dependency_defs=[connection_def],
         )

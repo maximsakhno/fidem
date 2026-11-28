@@ -48,7 +48,7 @@ class TestHandle:
         )
         environment = EnvironmentImpl(
             operation_engine=operation_engine_mock,
-            effect_defs=[EffectDef(TestInternalEffect, handler)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
         )
 
         async with environment:
@@ -91,7 +91,7 @@ class TestHandle:
         )
         environment = EnvironmentImpl(
             operation_engine=operation_engine_mock,
-            effect_defs=[EffectDef(TestInternalEffect, handler)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
         )
 
         async with environment:
@@ -109,7 +109,9 @@ class TestHandle:
 
         environment = EnvironmentImpl(
             operation_engine=make_operation_engine_mock(execution_plan),
-            effect_defs=[EffectDef(TestInternalEffect, make_failing_handler(ValueError("effect_error")))],
+            effect_defs=[
+                EffectDef("test_internal", TestInternalEffect, make_failing_handler(ValueError("effect_error")))
+            ],
         )
 
         async with environment:
@@ -123,7 +125,7 @@ class TestHandle:
             operation_engine=make_operation_engine_mock(
                 GeneratorFunctionStub(steps=[YieldStep(make_instruction(), None)])
             ),
-            effect_defs=[EffectDef(TestInternalEffect, make_failing_handler(effect_error))],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, make_failing_handler(effect_error))],
         )
 
         async with environment:
@@ -195,9 +197,9 @@ class TestExecuteWithOperationEngine:
         environment = EnvironmentImpl(
             operation_engine=OperationEngineImpl(command_defs=[StagedCommandDef("test", TestCommand, handler)]),
             effect_defs=[
-                EffectDef(TestInternalEffect, handle_internal),
-                EffectDef(TestExternalReadEffect, handle_external),
-                EffectDef(TestDatabaseWriteEffect, handle_database),
+                EffectDef("test_internal", TestInternalEffect, handle_internal),
+                EffectDef("test_external_read", TestExternalReadEffect, handle_external),
+                EffectDef("test_database_write", TestDatabaseWriteEffect, handle_database),
             ],
         )
 
@@ -219,7 +221,7 @@ class TestExecuteWithOperationEngine:
         effect_ids: MutableSequence[str] = []
         environment = EnvironmentImpl(
             operation_engine=OperationEngineImpl(command_defs=[StagedCommandDef("test", TestCommand, handler)]),
-            effect_defs=[EffectDef(TestInternalEffect, handle_internal)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handle_internal)],
         )
 
         async with environment:
@@ -247,7 +249,7 @@ class TestGuards:
                 command_defs=[StagedCommandDef("test", TestCommand, handler)],
                 guard_defs=[GuardDef(config)],
             ),
-            effect_defs=[EffectDef(TestInternalEffect, handle_internal)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handle_internal)],
         )
 
         async with environment:

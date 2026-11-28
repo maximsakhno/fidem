@@ -3,22 +3,23 @@ from collections.abc import MutableMapping, MutableSet
 from dataclasses import dataclass
 from typing import Any
 
-from fidem.core import (
+from fidem import (
     Command,
     EffectContext,
-    EffectDef,
-    EnvironmentImpl,
     ExternalReadEffect,
+    Fidem,
     InternalEffect,
     Message,
     MessageContext,
     MessageMiddleware,
-    MessageMiddlewareDef,
     MessageMiddlewareEffectful,
-    OperationEngineImpl,
     Proceed,
-    StagedCommandDef,
     StagedEffectful,
+    command,
+    command_handler,
+    effect,
+    effect_handler,
+    middleware,
 )
 
 
@@ -36,40 +37,48 @@ FAILED_EFFECT_IDS: MutableSet[str] = set()
 
 
 # ── Effects ───────────────────────────────────────────────
+@effect("get_cached")
 @dataclass(frozen=True, slots=True)
 class GetCachedEffect(InternalEffect[CacheEntry | None]):
     message: Message[Any]
 
 
+@effect("set_cached")
 @dataclass(frozen=True, slots=True)
 class SetCachedEffect(InternalEffect[None]):
     message: Message[Any]
     result: object
 
 
+@effect("log")
 @dataclass(frozen=True, slots=True)
 class LogEffect(InternalEffect[None]):
     text: str
 
 
+@effect("fetch_rate")
 @dataclass(frozen=True, slots=True)
 class FetchRateEffect(ExternalReadEffect[float]):
     currency: str
 
 
+@effect_handler
 async def handle_get_cached(effect: GetCachedEffect) -> CacheEntry | None:
     return CACHE.get(effect.message)
 
 
+@effect_handler
 async def handle_set_cached(effect: SetCachedEffect) -> None:
     CACHE[effect.message] = CacheEntry(effect.result)
 
 
+@effect_handler
 async def handle_log(effect: LogEffect) -> None:
     print(f"[log] {effect.text}")
 
 
 # The rate service fails the first request with each effect id.
+@effect_handler
 async def handle_fetch_rate(effect: FetchRateEffect, effect_context: EffectContext) -> float:
     effect_id = effect_context.effect_id
     if effect_id not in FAILED_EFFECT_IDS:
@@ -81,7 +90,9 @@ async def handle_fetch_rate(effect: FetchRateEffect, effect_context: EffectConte
 
 
 # ── Middlewares ───────────────────────────────────────────
+# A middleware is named after its function, and the name is the seed of the ids of its effects.
 # The cache returns a stored result without proceeding, the result is stored by an effect as well.
+@middleware
 def cache(message: Message[Any]) -> MessageMiddlewareEffectful[object]:
     entry = yield from GetCachedEffect(message)
     if entry is not None:
@@ -109,42 +120,33 @@ def make_retry(attempts: int) -> MessageMiddleware:
 
 
 # ── Command ───────────────────────────────────────────────
+@command("convert")
 @dataclass(frozen=True, slots=True)
 class ConvertCommand(Command[float]):
     amount: float
     currency: str
 
 
+@command_handler
 def convert(command: ConvertCommand) -> StagedEffectful[float]:
     rate = yield from FetchRateEffect(command.currency)
     return command.amount * rate
 
 
 async def main() -> None:
-    environment = EnvironmentImpl(
-        operation_engine=OperationEngineImpl(
-            command_defs=[StagedCommandDef("convert", ConvertCommand, convert)],
-            # The first middleware is the outer one, so a cache hit skips the retries.
-            middleware_defs=[
-                MessageMiddlewareDef("cache", cache),
-                MessageMiddlewareDef("retry", make_retry(attempts=3)),
-            ],
-        ),
-        effect_defs=[
-            EffectDef(GetCachedEffect, handle_get_cached),
-            EffectDef(SetCachedEffect, handle_set_cached),
-            EffectDef(LogEffect, handle_log),
-            EffectDef(FetchRateEffect, handle_fetch_rate),
-        ],
+    fidem = Fidem(
+        definitions=[convert, handle_get_cached, handle_set_cached, handle_log, handle_fetch_rate],
+        # The first middleware is the outer one, so a cache hit skips the retries.
+        middlewares=[cache, make_retry(attempts=3)],
     )
 
-    async with environment:
+    async with fidem:
         print("\n=== The retry repeats the failed handler ===")
-        result = await environment.handle(ConvertCommand(amount=100, currency="EUR"), message_id="convert-1")
+        result = await fidem.handle(ConvertCommand(amount=100, currency="EUR"), message_id="convert-1")
         print(f"Result: {result}")
 
         print("\n=== The cache returns the stored result ===")
-        result = await environment.handle(ConvertCommand(amount=100, currency="EUR"), message_id="convert-2")
+        result = await fidem.handle(ConvertCommand(amount=100, currency="EUR"), message_id="convert-2")
         print(f"Result: {result}")
         print()
 

@@ -41,7 +41,7 @@ class TestEffectHandlerDependencies:
         instruction = make_instruction()
         environment = EnvironmentImpl(
             operation_engine=make_operation_engine_mock(GeneratorFunctionStub(steps=[YieldStep(instruction, None)])),
-            effect_defs=[EffectDef(TestInternalEffect, handler)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
         )
 
         async with environment:
@@ -123,7 +123,7 @@ class TestEffectHandlerDependencies:
         message_error = ValueError("message_error")
         environment = EnvironmentImpl(
             operation_engine=make_operation_engine_mock(execution_plan),
-            effect_defs=[EffectDef(TestInternalEffect, handler)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
             dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.MESSAGE)],
         )
 
@@ -198,7 +198,7 @@ class TestEffectHandlerDependencies:
 
         environment = EnvironmentImpl(
             operation_engine=make_operation_engine_mock(execution_plan),
-            effect_defs=[EffectDef(TestInternalEffect, handler)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
             dependency_defs=[EffectDependencyDef(resource, lifetime=EffectDependencyLifetime.EFFECT)],
         )
 
@@ -227,7 +227,7 @@ class TestEffectHandlerDependencies:
             operation_engine=make_operation_engine_mock(
                 GeneratorFunctionStub(steps=[YieldStep(make_instruction(), None)])
             ),
-            effect_defs=[EffectDef(TestInternalEffect, handler)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
             dependency_defs=[
                 EffectDependencyDef(
                     factory=resource,
@@ -295,6 +295,6 @@ class TestEffectHandlerDependencies:
             operation_engine=make_operation_engine_mock(
                 GeneratorFunctionStub(steps=[YieldStep(instruction, None) for instruction in instructions])
             ),
-            effect_defs=[EffectDef(TestInternalEffect, handler)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
             dependency_defs=dependency_defs,
         )

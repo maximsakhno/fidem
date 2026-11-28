@@ -5,24 +5,27 @@ from itertools import count
 from time import perf_counter
 from typing import Final
 
-from fidem.core import (
+from fidem import (
     CallNext,
     Command,
     EffectCall,
-    EffectDef,
-    EffectDependencyDef,
     EffectDependencyLifetime,
-    EffectMiddlewareDef,
-    EnvironmentImpl,
+    EffectMiddleware,
     ExternalReadEffect,
+    Fidem,
     InternalEffect,
-    OperationEngineImpl,
-    StagedCommandDef,
     StagedEffectful,
+    command,
+    command_handler,
+    dependency,
+    effect,
+    effect_handler,
+    effect_middleware,
 )
 
 
 # ── Middlewares ───────────────────────────────────────────
+@effect_middleware
 async def log(effect_call: EffectCall, call_next: CallNext) -> object:
     name = type(effect_call.effect).__name__
     started = perf_counter()
@@ -34,7 +37,7 @@ async def log(effect_call: EffectCall, call_next: CallNext) -> object:
 
 
 # Middlewares get their settings through a closure, they run before dependency injection.
-def make_retry(attempts: int) -> EffectMiddlewareDef:
+def make_retry(attempts: int) -> EffectMiddleware:
     async def retry(effect_call: EffectCall, call_next: CallNext) -> object:
         for attempt in range(1, attempts):
             try:
@@ -43,10 +46,7 @@ def make_retry(attempts: int) -> EffectMiddlewareDef:
                 print(f"[retry] attempt {attempt} failed: {exc}")
         return await call_next()
 
-    return EffectMiddlewareDef(retry)
-
-
-LOG = EffectMiddlewareDef(log)
+    return retry
 
 
 # ── Dependencies ──────────────────────────────────────────
@@ -59,6 +59,7 @@ connection_numbers = count(1)
 
 
 # Each attempt gets a new connection because effect dependencies are resolved after the middlewares.
+@dependency(lifetime=EffectDependencyLifetime.EFFECT)
 async def connection() -> AsyncGenerator[Connection]:
     number = next(connection_numbers)
     print(f"[connection {number}] open")
@@ -69,11 +70,13 @@ async def connection() -> AsyncGenerator[Connection]:
 
 
 # ── Effects ───────────────────────────────────────────────
+@effect("get_rate")
 @dataclass(frozen=True, slots=True)
 class GetRateEffect(ExternalReadEffect[float]):
     currency: str
 
 
+@effect("get_greeting")
 @dataclass(frozen=True, slots=True)
 class GetGreetingEffect(InternalEffect[str]):
     pass
@@ -82,23 +85,28 @@ class GetGreetingEffect(InternalEffect[str]):
 RATES: MutableMapping[str, float] = {"EUR": 1.08}
 
 
+# The list of the effect replaces the list of Fidem, so the logging is listed again.
+@effect_handler(middlewares=[log, make_retry(attempts=3)])
 async def handle_get_rate(effect: GetRateEffect, connection: Connection) -> float:
     if connection.number < 3:
         raise ConnectionError(f"connection {connection.number} is broken")
     return RATES[effect.currency]
 
 
-async def handle_get_greeting() -> str:
+@effect_handler
+async def handle_get_greeting(effect: GetGreetingEffect) -> str:
     return "Hello"
 
 
 # ── Command ───────────────────────────────────────────────
+@command("convert")
 @dataclass(frozen=True, slots=True)
 class ConvertCommand(Command[str]):
     amount: float
     currency: str
 
 
+@command_handler
 def convert(command: ConvertCommand) -> StagedEffectful[str]:
     greeting = yield from GetGreetingEffect()
     rate = yield from GetRateEffect(command.currency)
@@ -106,22 +114,14 @@ def convert(command: ConvertCommand) -> StagedEffectful[str]:
 
 
 async def main() -> None:
-    environment = EnvironmentImpl(
-        operation_engine=OperationEngineImpl(command_defs=[StagedCommandDef("convert", ConvertCommand, convert)]),
-        effect_defs=[
-            EffectDef(GetGreetingEffect, handle_get_greeting),
-            # The list of the effect replaces the environment list, so the logging is listed again.
-            EffectDef(GetRateEffect, handle_get_rate, middleware_defs=[LOG, make_retry(attempts=3)]),
-        ],
-        dependency_defs=[
-            EffectDependencyDef(connection, lifetime=EffectDependencyLifetime.EFFECT),
-        ],
-        effect_middleware_defs=[LOG],
+    fidem = Fidem(
+        definitions=[convert, handle_get_greeting, handle_get_rate, connection],
+        effect_middlewares=[log],
     )
 
-    async with environment:
+    async with fidem:
         print()
-        result = await environment.handle(ConvertCommand(amount=100, currency="EUR"), message_id="convert-1")
+        result = await fidem.handle(ConvertCommand(amount=100, currency="EUR"), message_id="convert-1")
         print(f"Result: {result}\n")
 
 

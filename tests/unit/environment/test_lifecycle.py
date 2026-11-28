@@ -25,14 +25,32 @@ class TestEffectDefinition:
             pass
 
         handler = make_failing_handler(ValueError())
-        duplicate_effect_defs = [EffectDef(TestInternalEffect, handler), EffectDef(TestInternalEffect, handler)]
-        other_effect_defs = [EffectDef(OtherEffect, handler)]
+        duplicate_effect_defs = [
+            EffectDef("first", TestInternalEffect, handler),
+            EffectDef("second", TestInternalEffect, handler),
+        ]
+        other_effect_defs = [EffectDef("other", OtherEffect, handler)]
 
         with pytest.raises(DuplicateEffectDefError) as exc_info:
             EnvironmentImpl(
                 operation_engine=Mock(spec=OperationEngine),
                 effect_defs=duplicate_effect_defs + other_effect_defs,
             )
+
+        assert exc_info.value.args == (duplicate_effect_defs,)
+
+    def test_raises_duplicate_effect_def_error_when_defines_effects_with_same_name(self) -> None:
+        class OtherEffect(InternalEffect[str]):
+            pass
+
+        handler = make_failing_handler(ValueError())
+        duplicate_effect_defs = [
+            EffectDef("same", TestInternalEffect, handler),
+            EffectDef("same", OtherEffect, handler),
+        ]
+
+        with pytest.raises(DuplicateEffectDefError) as exc_info:
+            EnvironmentImpl(operation_engine=Mock(spec=OperationEngine), effect_defs=duplicate_effect_defs)
 
         assert exc_info.value.args == (duplicate_effect_defs,)
 
