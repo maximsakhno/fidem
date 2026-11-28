@@ -124,6 +124,13 @@ from fidem.serialization import (
     Serializer,
     UnsupportedTypeError,
 )
+from fidem.stdlib import (
+    STDLIB_EFFECT_DEFS,
+    NewUuidEffect,
+    NowEffect,
+    RandomBytesEffect,
+    RandomIntEffect,
+)
 from fidem.transactions import (
     IMPLICIT_READ_TRANSACTION,
     IMPLICIT_WRITE_TRANSACTION,
@@ -140,6 +147,7 @@ from fidem.transactions import (
 __all__ = [
     "IMPLICIT_READ_TRANSACTION",
     "IMPLICIT_WRITE_TRANSACTION",
+    "STDLIB_EFFECT_DEFS",
     "AmbiguousDependencyError",
     "AnyEventHandlerDef",
     "AnyTransaction",
@@ -214,6 +222,8 @@ __all__ = [
     "MessageNotDefinedError",
     "MiddlewareName",
     "MissingAnnotationError",
+    "NewUuidEffect",
+    "NowEffect",
     "OperationEngine",
     "OperationEngineImpl",
     "OutboxDispatcherOptions",
@@ -223,6 +233,8 @@ __all__ = [
     "QueryEffect",
     "QueryEffectful",
     "QueryHandler",
+    "RandomBytesEffect",
+    "RandomIntEffect",
     "ReadEffect",
     "ReadTransaction",
     "ReadTransactionEffect",
