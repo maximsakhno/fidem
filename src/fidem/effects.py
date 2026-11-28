@@ -15,6 +15,7 @@ __all__ = [
     "ExternalEffect",
     "ExternalReadEffect",
     "ExternalWriteEffect",
+    "HandledEffect",
     "InternalEffect",
     "ReadEffect",
     "WriteEffect",
@@ -75,6 +76,10 @@ class DatabaseReadEffect[ResultT](DatabaseEffect[ResultT], ReadEffect[ResultT]):
 
 class DatabaseWriteEffect[ResultT](DatabaseEffect[ResultT], WriteEffect[ResultT]):
     pass
+
+
+type HandledEffect[ResultT] = InternalEffect[ResultT] | ExternalEffect[ResultT] | DatabaseEffect[ResultT]
+"""Effects that handlers of the environment run, unlike control effects."""
 
 
 type EffectHandler[ResultT] = Callable[..., Awaitable[ResultT]]

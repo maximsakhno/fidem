@@ -164,6 +164,10 @@ ignore = [
 # Callbacks and wrappers accept *args/**kwargs they do not use.
 ignore-variadic-names = true
 
+[tool.ruff.lint.flake8-bugbear]
+# Frozen options are safe defaults, but B008 sees that only for the classes of the same module.
+extend-immutable-calls = ["fidem.outbox.OutboxDispatcherOptions"]
+
 [tool.ruff.lint.isort]
 combine-as-imports = true
 

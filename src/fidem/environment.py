@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from functools import partial
 from inspect import iscoroutinefunction
 from types import TracebackType
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Final, Self
 from uuid import uuid4
 
 from fidem._validation import check_unique
-from fidem.di.core import UnsupportedFunctionError
+from fidem.di.core import DependencyKey, UnsupportedFunctionError
 from fidem.di.effects import (
     EffectDependencyContainer,
     EffectDependencyDef,
@@ -20,7 +20,8 @@ from fidem.di.effects import (
 )
 from fidem.effects import DatabaseEffect, Effect
 from fidem.errors import Error
-from fidem.messages import Command, Message, MessageContext, MessageId, Query
+from fidem.messages import Command, Event, EventHandlerName, Message, MessageContext, MessageId, Query
+from fidem.operation_engine.definitions import EventDef
 from fidem.operation_engine.instructions import (
     CallEffectHandlerInstruction,
     EffectCall,
@@ -63,6 +64,12 @@ class EffectDef[EffectT: Effect[Any]]:
 
 
 class Environment(AbstractAsyncContextManager["Environment", None], ABC):
+    @property
+    @abstractmethod
+    def event_defs(self) -> Collection[EventDef[Any]]:
+        """Declared events, by which a delivery finds the type of its event and its handlers."""
+        raise NotImplementedError
+
     @abstractmethod
     async def handle[ResultT](
         self,
@@ -71,6 +78,15 @@ class Environment(AbstractAsyncContextManager["Environment", None], ABC):
     ) -> ResultT:
         """Runs the operation of the command or the query and returns its result."""
         raise NotImplementedError
+
+    @abstractmethod
+    async def deliver(self, event: Event, handler: EventHandlerName, message_id: MessageId) -> None:
+        """Runs the operation of one handler of the event, the message id identifies the delivery."""
+        raise NotImplementedError
+
+
+_ENVIRONMENT_KEY: Final = DependencyKey(name="environment", type=Environment)
+"""The builtin dependency of services, through which they run messages."""
 
 
 class DuplicateEffectDefError(Error):
@@ -112,12 +128,15 @@ class EnvironmentImpl(Environment):
         self._dependency_container: EffectDependencyContainer = EffectDependencyContainer(
             dependency_defs=dependency_defs,
             effect_types=tuple(type_to_effect_def),
+            service_dependencies={_ENVIRONMENT_KEY: self},
         )
         self._type_to_effect: Mapping[type[Effect[Any]], _PreparedEffect] = {
             effect_type: self._prepare_effect(effect_def, effect_middleware_defs)
             for effect_type, effect_def in type_to_effect_def.items()
         }
         self._application_scope: Scope | None = None
+        # Replaced on start, closing it before is a no-op.
+        self._service_scope: Scope = Scope({})
 
     @staticmethod
     def _make_type_to_effect_def(
@@ -144,10 +163,22 @@ class EnvironmentImpl(Environment):
             middlewares=tuple(middleware_def.middleware for middleware_def in middleware_defs),
         )
 
+    @property
+    def event_defs(self) -> Collection[EventDef[Any]]:
+        return self._operation_engine.event_defs
+
     async def __aenter__(self) -> Self:
         if self._application_scope is not None:
             raise EnvironmentAlreadyStartedError
-        self._application_scope = await self._dependency_container.start()
+        application_scope = await self._dependency_container.start()
+        # Services run messages while they start and stop, so the application scope is set around them.
+        self._application_scope = application_scope
+        try:
+            self._service_scope = await self._dependency_container.start_services(application_scope)
+        except BaseException as exc:
+            self._application_scope = None
+            await self._dependency_container.stop(application_scope, exc)
+            raise
         return self
 
     async def __aexit__(
@@ -157,8 +188,11 @@ class EnvironmentImpl(Environment):
         traceback: TracebackType | None,
     ) -> None:
         application_scope = self._get_application_scope()
-        self._application_scope = None
-        await self._dependency_container.stop(application_scope, exc)
+        try:
+            await self._service_scope.close(exc)
+        finally:
+            self._application_scope = None
+            await self._dependency_container.stop(application_scope, exc)
 
     def _get_application_scope(self) -> Scope:
         if self._application_scope is None:
@@ -180,6 +214,18 @@ class EnvironmentImpl(Environment):
     @staticmethod
     def _make_message_context(message_id: MessageId | None) -> MessageContext:
         return MessageContext(message_id=uuid4().hex if message_id is None else message_id)
+
+    async def deliver(self, event: Event, handler: EventHandlerName, message_id: MessageId) -> None:
+        message_context = MessageContext(message_id=message_id)
+        await self._run_message(
+            message=event,
+            message_context=message_context,
+            execution_plan=self._operation_engine.deliver(
+                event=event,
+                handler=handler,
+                message_context=message_context,
+            ),
+        )
 
     async def _run_message[ResultT](
         self,

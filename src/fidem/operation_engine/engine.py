@@ -18,7 +18,7 @@ from fidem.effects import (
     InternalEffect,
 )
 from fidem.guards import GuardContainer, GuardDef, GuardedFunction, GuardResolutionStep, GuardValues
-from fidem.messages import QUERY_EFFECT_TYPES, Command, Event, Message, MessageContext, Query
+from fidem.messages import QUERY_EFFECT_TYPES, Command, Event, EventHandlerName, Message, MessageContext, Query
 from fidem.operation_engine.definitions import (
     AnyEventHandlerDef,
     AtomicCommandDef,
@@ -38,6 +38,7 @@ from fidem.operation_engine.errors import (
     DuplicateEventHandlerDefError,
     DuplicateMessageMiddlewareDefError,
     DuplicateQueryDefError,
+    EventHandlerNotDefinedError,
     EventNotDefinedError,
     MessageNotDefinedError,
     UnsupportedAtomicResultError,
@@ -116,7 +117,7 @@ class _PreparedMessage[MessageDefT: _AnyMessageDef]:
 @dataclass(frozen=True, slots=True)
 class _PreparedEvent:
     event_def: EventDef[Any]
-    handlers: Sequence[_PreparedMessage[AnyEventHandlerDef]]
+    handlers: Mapping[EventHandlerName, _PreparedMessage[AnyEventHandlerDef]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,6 +229,7 @@ class OperationEngineImpl(OperationEngine):
         type_to_command_def = self._make_type_to_def(command_defs, DuplicateCommandDefError)
         type_to_query_def = self._make_type_to_def(query_defs, DuplicateQueryDefError)
         self._check_event_defs(event_defs)
+        self._event_defs: Collection[EventDef[Any]] = tuple(event_defs)
         self._guard_container: GuardContainer = GuardContainer(
             guard_defs=guard_defs,
             message_types=(
@@ -301,10 +303,10 @@ class OperationEngineImpl(OperationEngine):
         # Handlers are prepared ahead of their execution so that errors in their definitions show up on start.
         return _PreparedEvent(
             event_def=event_def,
-            handlers=tuple(
-                self._prepare_message(event_def.event_type, handler_def, middleware_defs)
+            handlers={
+                handler_def.name: self._prepare_message(event_def.event_type, handler_def, middleware_defs)
                 for handler_def in event_def.handler_defs
-            ),
+            },
         )
 
     @staticmethod
@@ -314,6 +316,10 @@ class OperationEngineImpl(OperationEngine):
             return f":{key.name}:{dependency_type.__module__}.{dependency_type.__qualname__}"
         return f":{key.name}:{dependency_type!r}"
 
+    @property
+    def event_defs(self) -> Collection[EventDef[Any]]:
+        return self._event_defs
+
     def handle[ResultT](
         self,
         message: Command[ResultT] | Query[ResultT],
@@ -322,6 +328,28 @@ class OperationEngineImpl(OperationEngine):
         prepared_message = self._type_to_message.get(type(message))
         if prepared_message is None:
             raise MessageNotDefinedError(type(message))
+        return (yield from self._run_operation(prepared_message, message, message_context))
+
+    def deliver(
+        self,
+        event: Event,
+        handler: EventHandlerName,
+        message_context: MessageContext,
+    ) -> ExecutionPlan[None]:
+        prepared_event = self._type_to_event.get(type(event))
+        if prepared_event is None:
+            raise EventNotDefinedError(type(event))
+        prepared_handler = prepared_event.handlers.get(handler)
+        if prepared_handler is None:
+            raise EventHandlerNotDefinedError(type(event), handler)
+        yield from self._run_operation(prepared_handler, event, message_context)
+
+    def _run_operation[MessageDefT: _AnyMessageDef](
+        self,
+        prepared_message: _PreparedMessage[MessageDefT],
+        message: Message[Any],
+        message_context: MessageContext,
+    ) -> ExecutionPlan[Any]:
         message_def = prepared_message.message_def
         if not isinstance(message_def, QueryDef) and message_def.execution_mode != ExecutionMode.EPHEMERAL:
             raise NotImplementedError(f"Execution mode {message_def.execution_mode} is not implemented yet")

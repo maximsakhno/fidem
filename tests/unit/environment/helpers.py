@@ -1,10 +1,11 @@
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import Mock
 
 from fidem.effects import EffectContext
 from fidem.messages import MessageContext
+from fidem.operation_engine.definitions import EventDef
 from fidem.operation_engine.instructions import (
     CallEffectHandlerInstruction,
     EffectCall,
@@ -27,9 +28,13 @@ class Config:
 
 def make_operation_engine_mock(
     execution_plan: Callable[..., ExecutionPlan[Any]] | None = None,
+    deliver_plan: Callable[..., ExecutionPlan[None]] | None = None,
+    event_defs: Collection[EventDef[Any]] = (),
 ) -> Mock:
     operation_engine_mock = Mock(spec=OperationEngine)
     operation_engine_mock.handle.side_effect = execution_plan
+    operation_engine_mock.deliver.side_effect = deliver_plan
+    operation_engine_mock.event_defs = event_defs
     return operation_engine_mock
 
 

@@ -3,7 +3,7 @@ from typing import Any
 
 from fidem.effects import Effect
 from fidem.errors import Error
-from fidem.messages import Event, Message
+from fidem.messages import Event, EventHandlerName, Message
 from fidem.operation_engine.definitions import AnyEventHandlerDef, CommandDef, EventDef, MessageMiddlewareDef, QueryDef
 
 __all__ = [
@@ -12,6 +12,7 @@ __all__ = [
     "DuplicateEventHandlerDefError",
     "DuplicateMessageMiddlewareDefError",
     "DuplicateQueryDefError",
+    "EventHandlerNotDefinedError",
     "EventNotDefinedError",
     "MessageNotDefinedError",
     "UnsupportedAtomicResultError",
@@ -56,6 +57,11 @@ class MessageNotDefinedError(Error):
 class EventNotDefinedError(Error):
     def __init__(self, event_type: type[Event]) -> None:
         super().__init__(event_type)
+
+
+class EventHandlerNotDefinedError(Error):
+    def __init__(self, event_type: type[Event], handler: EventHandlerName) -> None:
+        super().__init__(event_type, handler)
 
 
 class UnsupportedEffectError(Error):

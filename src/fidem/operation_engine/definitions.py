@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
 
-from fidem.effects import ControlEffect, Effectful
+from fidem.effects import ControlEffect, Effectful, HandledEffect
 from fidem.messages import (
     AtomicHandler,
     Command,
@@ -16,7 +16,6 @@ from fidem.messages import (
     QueryHandler,
     StagedHandler,
 )
-from fidem.operation_engine.instructions import HandledEffect
 from fidem.transactions import ReadTransactionEffect, WriteTransactionEffect
 
 __all__ = [
