@@ -211,7 +211,7 @@ class TestEffectMiddlewares:
         async def middleware(effect_call: EffectCall, call_next: CallNext) -> object:
             raise ValueError("middleware_error")
 
-        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
+        def execution_plan(**_: object) -> ExecutionPlan[str]:
             try:
                 yield make_instruction()
             except ValueError as exc:
@@ -301,8 +301,8 @@ class TestEffectMiddlewares:
 
         async with environment:
             results = await gather(
-                environment.handle(TestCommand(), "message1"),
-                environment.handle(TestCommand(), "message2"),
+                environment.handle(TestCommand(), message_id="message1"),
+                environment.handle(TestCommand(), message_id="message2"),
             )
 
         assert results == ["message1", "message2"]
@@ -475,7 +475,7 @@ class TestEffectMiddlewares:
     ) -> EnvironmentImpl:
         """Makes an environment whose command yields one effect and returns its result."""
 
-        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
+        def execution_plan(**_: object) -> ExecutionPlan[object]:
             return (yield make_instruction() if instruction is None else instruction)
 
         return EnvironmentImpl(

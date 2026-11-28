@@ -127,7 +127,7 @@ class TestMemoryOutbox:
         environment = make_environment(outbox, deliveries, publish(["a"]), created_handlers=[handle_created] * 2)
 
         async with environment:
-            await environment.handle(TestCommand(), "command")
+            await environment.handle(TestCommand(), message_id="command")
             await outbox.drain()
 
         assert statuses(outbox.rows) == [("handler0", OutboxStatus.DONE, 1), ("handler1", OutboxStatus.DONE, 1)]
@@ -190,9 +190,9 @@ class TestMemoryOutbox:
         environment = make_environment(outbox, deliveries, publish(["a"]))
 
         async with environment:
-            await environment.handle(TestCommand(), "command")
+            await environment.handle(TestCommand(), message_id="command")
             await outbox.drain()
-            await environment.handle(TestCommand(), "command")
+            await environment.handle(TestCommand(), message_id="command")
             await outbox.drain()
 
         assert len(outbox.rows) == 1

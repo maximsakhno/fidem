@@ -3,7 +3,7 @@ from typing import Any
 from unittest.mock import ANY
 
 from fidem.effects import Effect, EffectContext, Effectful
-from fidem.guards import GuardDef
+from fidem.guards import GuardDef, GuardInputDef
 from fidem.messages import Message, MessageContext, StagedHandler
 from fidem.operation_engine.definitions import (
     AtomicCommandDef,
@@ -43,7 +43,7 @@ def collect_effects(execution_plan: ExecutionPlan[Any]) -> Sequence[CallEffectHa
 
 def make_engine(
     handler: StagedHandler[Any, Any],
-    guard_defs: Collection[GuardDef[Any]] = (),
+    guard_defs: Collection[GuardDef[Any] | GuardInputDef[Any]] = (),
     middleware_defs: Sequence[MessageMiddlewareDef] = (),
     command_middleware_defs: Sequence[MessageMiddlewareDef] | None = None,
     command_def_type: type[StagedCommandDef[Any]] | type[AtomicCommandDef[Any]] = StagedCommandDef,
@@ -66,7 +66,7 @@ def make_engine(
 
 def make_query_engine(
     handler: StagedHandler[Any, Any],
-    guard_defs: Collection[GuardDef[Any]] = (),
+    guard_defs: Collection[GuardDef[Any] | GuardInputDef[Any]] = (),
     middleware_defs: Sequence[MessageMiddlewareDef] = (),
     query_middleware_defs: Sequence[MessageMiddlewareDef] | None = None,
 ) -> OperationEngineImpl:

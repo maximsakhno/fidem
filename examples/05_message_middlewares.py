@@ -140,11 +140,11 @@ async def main() -> None:
 
     async with environment:
         print("\n=== The retry repeats the failed handler ===")
-        result = await environment.handle(ConvertCommand(amount=100, currency="EUR"), "convert-1")
+        result = await environment.handle(ConvertCommand(amount=100, currency="EUR"), message_id="convert-1")
         print(f"Result: {result}")
 
         print("\n=== The cache returns the stored result ===")
-        result = await environment.handle(ConvertCommand(amount=100, currency="EUR"), "convert-2")
+        result = await environment.handle(ConvertCommand(amount=100, currency="EUR"), message_id="convert-2")
         print(f"Result: {result}")
         print()
 

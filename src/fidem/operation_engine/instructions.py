@@ -61,8 +61,9 @@ class OperationEngine(ABC):
         self,
         message: Command[ResultT] | Query[ResultT],
         message_context: MessageContext,
+        inputs: Collection[object] = (),
     ) -> ExecutionPlan[ResultT]:
-        """Plans the operation of the command or the query."""
+        """Plans the operation of the command or the query, the guards get the inputs."""
         raise NotImplementedError
 
     @abstractmethod

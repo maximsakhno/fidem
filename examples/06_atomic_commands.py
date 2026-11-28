@@ -183,11 +183,11 @@ async def main() -> None:
 
     async with environment:
         print("\n=== Transfer commits both balances and the transfer together ===")
-        result = await environment.handle(TransferCommand("alice", "bob", Decimal(30)), "transfer-1")
+        result = await environment.handle(TransferCommand("alice", "bob", Decimal(30)), message_id="transfer-1")
         print(f"Result: {result}")
 
         print("\n=== A retry with the same message id does not move the money again ===")
-        result = await environment.handle(TransferCommand("alice", "bob", Decimal(30)), "transfer-1")
+        result = await environment.handle(TransferCommand("alice", "bob", Decimal(30)), message_id="transfer-1")
         print(f"Result: {result}")
 
         print("\n=== Insufficient funds stop the command before the transaction ===")

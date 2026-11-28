@@ -45,7 +45,7 @@ class TestEffectHandlerDependencies:
         )
 
         async with environment:
-            await environment.handle(command, "test_message_id")
+            await environment.handle(command, message_id="test_message_id")
 
         assert calls == [
             BuiltinDependencies(
@@ -75,8 +75,8 @@ class TestEffectHandlerDependencies:
         )
 
         async with environment:
-            await environment.handle(TestCommand(), "message1")
-            await environment.handle(TestCommand(), "message2")
+            await environment.handle(TestCommand(), message_id="message1")
+            await environment.handle(TestCommand(), message_id="message2")
 
         assert events == [
             "start message1",
@@ -115,7 +115,7 @@ class TestEffectHandlerDependencies:
         async def handler(resource: Resource) -> None:
             pass
 
-        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
+        def execution_plan(**_: object) -> ExecutionPlan[str]:
             yield make_instruction()
             raise message_error
 
@@ -189,7 +189,7 @@ class TestEffectHandlerDependencies:
         async def handler(resource: Resource) -> str:
             return "effect_result"
 
-        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
+        def execution_plan(**_: object) -> ExecutionPlan[str]:
             try:
                 yield make_instruction()
             except ValueError as exc:

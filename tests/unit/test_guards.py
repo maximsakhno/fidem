@@ -1,5 +1,5 @@
 from collections.abc import AsyncGenerator, Generator, MutableSequence
-from typing import Any
+from typing import Any, NewType, Protocol
 
 import pytest
 
@@ -14,7 +14,15 @@ from fidem.di.core import (
     make_message_dependencies,
 )
 from fidem.effects import Effect, Effectful
-from fidem.guards import GuardContainer, GuardDef, GuardProvider, GuardValues, PreparedGuards
+from fidem.guards import (
+    GuardContainer,
+    GuardDef,
+    GuardInputDef,
+    GuardProvider,
+    GuardValues,
+    PreparedGuards,
+    UnsupportedGuardInputTypeError,
+)
 from fidem.messages import Command, Message, MessageContext, QueryEffect
 from fidem.testing import assert_generator
 from tests.messages import TestCommand
@@ -36,6 +44,19 @@ class OtherCommand(Command[str]):
 def make_service() -> Effectful[Service, QueryEffect]:
     yield from ()
     return Service()
+
+
+class SpecialService(Service):
+    pass
+
+
+def make_special_service() -> Effectful[SpecialService, QueryEffect]:
+    yield from ()
+    return SpecialService()
+
+
+class UncheckableInput(Protocol):
+    pass
 
 
 class TestGuardProvider:
@@ -286,6 +307,70 @@ class TestGuardValidation:
             GuardContainer(guard_defs=[GuardDef(message_context, name="message_context")])
 
         assert exc_info.value.args == (MESSAGE_CONTEXT_KEY,)
+
+
+class TestGuardInputValidation:
+    def test_raises_unsupported_guard_input_type_error_when_input_type_is_not_class(self) -> None:
+        token_type = NewType("token_type", str)
+
+        with pytest.raises(UnsupportedGuardInputTypeError) as exc_info:
+            GuardContainer(guard_defs=[GuardInputDef(token_type)])  # pyright: ignore[reportArgumentType] - checks a wrong input type
+
+        assert exc_info.value.args == (token_type,)
+
+    @pytest.mark.parametrize(
+        argnames="input_type",
+        argvalues=[UncheckableInput, Any],
+        ids=["protocol", "any"],
+    )
+    def test_raises_unsupported_guard_input_type_error_when_isinstance_cannot_check_input_type(
+        self,
+        input_type: type[Any],
+    ) -> None:
+        with pytest.raises(UnsupportedGuardInputTypeError) as exc_info:
+            GuardContainer(guard_defs=[GuardInputDef(input_type)])
+
+        assert exc_info.value.args == (input_type,)
+
+    @pytest.mark.parametrize(
+        argnames="guard_def",
+        argvalues=[GuardDef(make_service, name="service"), GuardDef(make_special_service)],
+        ids=["named_guard_of_input_type", "guard_of_input_subclass"],
+    )
+    def test_raises_duplicate_dependency_error_when_guard_value_could_be_taken_for_input(
+        self,
+        guard_def: GuardDef[Any],
+    ) -> None:
+        with pytest.raises(DuplicateDependencyError):
+            GuardContainer(guard_defs=[GuardInputDef(Service), guard_def])
+
+    def test_raises_duplicate_dependency_error_when_input_is_declared_twice(self) -> None:
+        with pytest.raises(DuplicateDependencyError) as exc_info:
+            GuardContainer(guard_defs=[GuardInputDef(Service), GuardInputDef(Service)])
+
+        assert exc_info.value.args == (DependencyKey(name="", type=Service),)
+
+    def test_raises_duplicate_dependency_error_when_guard_returns_input_type(self) -> None:
+        with pytest.raises(DuplicateDependencyError) as exc_info:
+            GuardContainer(guard_defs=[GuardInputDef(Service), GuardDef(make_service)])
+
+        assert exc_info.value.args == (DependencyKey(name="", type=Service),)
+
+    def test_collects_inputs_guards_need(self) -> None:
+        def service(other: OtherService) -> Effectful[Service, QueryEffect]:
+            yield from ()
+            return Service()
+
+        def handler(service: Service) -> Effectful[str, Effect[Any]]:
+            yield from ()
+            return "result"
+
+        container = GuardContainer(
+            guard_defs=[GuardDef(service), GuardInputDef(OtherService), GuardInputDef(OtherCommand)],
+            message_types=[TestCommand],
+        )
+
+        assert container.prepare(TestCommand, [handler]).input_keys == {DependencyKey(name="", type=OtherService)}
 
 
 MESSAGE = TestCommand()

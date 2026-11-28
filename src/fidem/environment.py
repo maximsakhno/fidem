@@ -74,9 +74,10 @@ class Environment(AbstractAsyncContextManager["Environment", None], ABC):
     async def handle[ResultT](
         self,
         message: Command[ResultT] | Query[ResultT],
+        *inputs: object,
         message_id: MessageId | None = None,
     ) -> ResultT:
-        """Runs the operation of the command or the query and returns its result."""
+        """Runs the operation of the command or the query and returns its result, the guards get the inputs."""
         raise NotImplementedError
 
     @abstractmethod
@@ -202,13 +203,18 @@ class EnvironmentImpl(Environment):
     async def handle[ResultT](
         self,
         message: Command[ResultT] | Query[ResultT],
+        *inputs: object,
         message_id: MessageId | None = None,
     ) -> ResultT:
         message_context = self._make_message_context(message_id)
         return await self._run_message(
             message=message,
             message_context=message_context,
-            execution_plan=self._operation_engine.handle(message=message, message_context=message_context),
+            execution_plan=self._operation_engine.handle(
+                message=message,
+                message_context=message_context,
+                inputs=inputs,
+            ),
         )
 
     @staticmethod

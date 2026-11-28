@@ -6,6 +6,7 @@ from inspect import Parameter, Signature, signature
 from typing import Any, Final, get_args, get_origin
 
 from fidem._functions import UnsupportedFunctionError, check_generator_function
+from fidem._validation import check_unique
 from fidem.errors import Error
 from fidem.messages import Message, MessageContext
 
@@ -175,7 +176,12 @@ class Node:
     """The node matches its type and its subclasses but not its bases, the exact type is checked at runtime."""
 
 
-type _Index = Mapping[object, Sequence[Node]]
+@dataclass(frozen=True, slots=True)
+class _Index:
+    type_to_nodes: Mapping[object, Sequence[Node]]
+    """Nodes a parameter of each type matches."""
+    builtin_nodes: Collection[Node]
+    """Builtin nodes the consumer may get."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +194,7 @@ class DependencyGraph[ProviderT: Provider]:
     """Validates dependencies and binds parameters to them."""
 
     # The subject is the builtin dependency whose exact type each consumer knows in advance.
+    # Providers may get every builtin node, a consumer may get only some of them.
 
     def __init__(
         self,
@@ -199,8 +206,7 @@ class DependencyGraph[ProviderT: Provider]:
         self._subject_node: Node = Node(key=subject_key)
         self._builtin_nodes: Collection[Node] = builtin_nodes
         self.providers: Final[Mapping[DependencyKey, ProviderT]] = self._make_key_to_provider(providers)
-        self._index: _Index = self._make_index()
-        index = self._add_subject_to_index(subject_types)
+        index = self._make_index(subject_types, builtin_nodes)
         self.arguments: Final[Mapping[DependencyKey, Sequence[DependencyArgument]]] = {
             key: self._bind_parameters(key, provider.parameters, index) for key, provider in self.providers.items()
         }
@@ -211,27 +217,25 @@ class DependencyGraph[ProviderT: Provider]:
         """Providers, each one after its dependencies."""
 
     def _make_key_to_provider(self, providers: Collection[ProviderT]) -> Mapping[DependencyKey, ProviderT]:
-        key_to_provider: MutableMapping[DependencyKey, ProviderT] = {}
-        builtin_keys = {self._subject_node.key, *(node.key for node in self._builtin_nodes)}
-        for provider in providers:
-            if provider.key in key_to_provider or provider.key in builtin_keys:
-                raise DuplicateDependencyError(provider.key)
-            key_to_provider[provider.key] = provider
-        return key_to_provider
+        check_unique(
+            defs=[
+                self._subject_node.key,
+                *(node.key for node in self._builtin_nodes),
+                *(provider.key for provider in providers),
+            ],
+            get_key=lambda key: key,
+            duplicate_error_type=lambda keys: DuplicateDependencyError(keys[0]),
+        )
+        return {provider.key: provider for provider in providers}
 
-    def _make_index(self) -> _Index:
-        """Maps each type to the nodes a parameter of this type matches."""
-        index: MutableMapping[object, MutableSequence[Node]] = defaultdict(list)
-        for node in [*(Node(key=key) for key in self.providers), *self._builtin_nodes]:
+    def _make_index(self, subject_types: Collection[type], builtin_nodes: Collection[Node]) -> _Index:
+        type_to_nodes: MutableMapping[object, MutableSequence[Node]] = defaultdict(list)
+        for node in [*(Node(key=key) for key in self.providers), *builtin_nodes]:
             for base in (node.key.type,) if node.narrowable else self._get_classes(node.key.type):
-                index[base].append(node)
-        return index
-
-    def _add_subject_to_index(self, subject_types: Collection[type]) -> _Index:
-        subject_index: MutableMapping[object, Sequence[Node]] = dict(self._index)
+                type_to_nodes[base].append(node)
         for base in {base for subject_type in subject_types for base in self._get_classes(subject_type)}:
-            subject_index[base] = (*self._index.get(base, ()), self._subject_node)
-        return subject_index
+            type_to_nodes[base].append(self._subject_node)
+        return _Index(type_to_nodes=type_to_nodes, builtin_nodes=builtin_nodes)
 
     @classmethod
     def _get_classes(cls, dependency_type: object) -> Collection[object]:
@@ -273,9 +277,9 @@ class DependencyGraph[ProviderT: Provider]:
         index: _Index,
     ) -> DependencyArgument:
         parameter_type = self._normalize_type(parameter_type)
-        exact_candidates = index.get(parameter_type, ())
+        exact_candidates = index.type_to_nodes.get(parameter_type, ())
         # A subclass checked only at runtime is a fallback, so the subject of an exact type wins over it.
-        candidates = list(exact_candidates or self._get_narrowable_candidates(parameter_type))
+        candidates = list(exact_candidates or self._get_narrowable_candidates(parameter_type, index.builtin_nodes))
 
         if len(candidates) > 1:
             named_candidates = [node for node in candidates if node.key.name == parameter]
@@ -295,12 +299,13 @@ class DependencyGraph[ProviderT: Provider]:
             ),
         )
 
-    def _get_narrowable_candidates(self, parameter_type: object) -> Sequence[Node]:
+    @staticmethod
+    def _get_narrowable_candidates(parameter_type: object, builtin_nodes: Collection[Node]) -> Sequence[Node]:
         if not isinstance(parameter_type, type):
             return ()
         return [
             node
-            for node in self._builtin_nodes
+            for node in builtin_nodes
             if node.narrowable and isinstance(node.key.type, type) and issubclass(parameter_type, node.key.type)
         ]
 
@@ -323,18 +328,24 @@ class DependencyGraph[ProviderT: Provider]:
             raise DependencyCycleError(exc.args[1]) from exc
 
     def bind(
-        self, consumer: object, parameters: Mapping[ParameterName, object], subject_type: type
+        self,
+        consumer: object,
+        parameters: Mapping[ParameterName, object],
+        subject_type: type,
+        builtin_nodes: Collection[Node] | None = None,
     ) -> Sequence[DependencyArgument]:
-        """Binds the parameters of a consumer of the given subject."""
-        return self._bind_parameters(consumer, parameters, self._add_subject_to_index((subject_type,)))
+        """Binds the parameters of a consumer of the given subject, by default to any builtin node."""
+        index = self._make_index((subject_type,), self._builtin_nodes if builtin_nodes is None else builtin_nodes)
+        return self._bind_parameters(consumer, parameters, index)
 
     def collect(
         self,
         arguments: Collection[DependencyArgument],
         subject_type: type,
+        builtin_nodes: Collection[Node] | None = None,
     ) -> Sequence[BoundProvider[ProviderT]]:
-        """Collects the providers the arguments need, each one after its dependencies."""
-        index = self._add_subject_to_index((subject_type,))
+        """Collects the providers the arguments need, each one after its dependencies, by default with any builtin node."""
+        index = self._make_index((subject_type,), self._builtin_nodes if builtin_nodes is None else builtin_nodes)
         key_to_arguments: MutableMapping[DependencyKey, Sequence[DependencyArgument]] = {}
         pending = [argument.key for argument in arguments]
         while pending:
