@@ -71,7 +71,7 @@ class _EngineError(Exception):
 
     def __init__(self, error: Exception) -> None:
         super().__init__(error)
-        self.error: Exception = error
+        self.error: Final[Exception] = error
 
 
 class _EffectIdGenerator:

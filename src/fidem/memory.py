@@ -4,9 +4,10 @@ from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from enum import Enum
 from heapq import nsmallest
+from typing import Final
 
 from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
-from fidem.environment import EffectDef, Environment
+from fidem.environment import EffectDef, EffectMiddlewareDef, Environment
 from fidem.messages import Event, EventHandlerName, MessageId, MessageName
 from fidem.outbox import (
     OutboxDelivery,
@@ -189,11 +190,19 @@ class MemoryOutbox:
     The environment gets `effect_defs` and `dependency_defs`, its dispatcher runs as a service.
     """
 
-    def __init__(self, options: OutboxDispatcherOptions = OutboxDispatcherOptions()) -> None:
+    def __init__(
+        self,
+        options: OutboxDispatcherOptions = OutboxDispatcherOptions(),
+        *,
+        middleware_defs: Sequence[EffectMiddlewareDef] | None = None,
+    ) -> None:
+        """Middlewares replace the environment middlewares for the writes, `None` keeps them."""
         self._store: _MemoryOutboxStore = _MemoryOutboxStore()
         self._options: OutboxDispatcherOptions = options
-        self.effect_defs: Sequence[EffectDef[WriteOutboxEffect]] = (EffectDef(WriteOutboxEffect, self._write),)
-        self.dependency_defs: Sequence[EffectDependencyDef[object]] = (
+        self.effect_defs: Final[Sequence[EffectDef[WriteOutboxEffect]]] = (
+            EffectDef(effect_type=WriteOutboxEffect, handler=self._write, middleware_defs=middleware_defs),
+        )
+        self.dependency_defs: Final[Sequence[EffectDependencyDef[object]]] = (
             EffectDependencyDef(self._transaction_events, lifetime=EffectDependencyLifetime.TRANSACTION),
             EffectDependencyDef(self._dispatcher, lifetime=EffectDependencyLifetime.SERVICE),
         )

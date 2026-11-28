@@ -3,12 +3,11 @@ from collections.abc import AsyncIterator, Collection, Iterable, Mapping, Mutabl
 from datetime import timedelta
 from importlib.resources import files
 from types import TracebackType
-from typing import Any, ClassVar, Final, NamedTuple, Self, cast
+from typing import Any, Final, NamedTuple, Self, cast
 
 from asyncpg import Connection, Pool, Record
 
 from fidem.asyncpg.migrations import MigrationSection, load_section
-from fidem.di.core import DependencyName
 from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
 from fidem.effects import EffectId
 from fidem.environment import EffectDef, EffectMiddlewareDef, Environment
@@ -26,8 +25,7 @@ from fidem.serialization import Codec, Serializer
 
 __all__ = [
     "OUTBOX_SECTION",
-    "AsyncpgOutboxDispatcherDef",
-    "AsyncpgOutboxEffectDef",
+    "AsyncpgOutbox",
     "AsyncpgOutboxStore",
 ]
 
@@ -40,66 +38,49 @@ _CHANNEL: Final = "fidem_outbox"
 """The channel of `NOTIFY` that wakes dispatchers up when a transaction writes events."""
 
 
-class AsyncpgOutboxEffectDef(EffectDef[WriteOutboxEffect]):
-    """Writes events to the table of `OUTBOX_SECTION` with the `Connection` and `Serializer` dependencies.
+# A tuple because asyncpg takes each row as the sequence of the query parameters.
+class _Row(NamedTuple):
+    id: MessageId
+    event_id: EffectId
+    source_message_id: MessageId
+    handler: EventHandlerName
+    event_name: MessageName
+    event_version: EventVersion
+    payload: str
 
-    `notify` wakes dispatchers up on commit, it costs a lock that queues up the commits that notify.
-    """
 
-    # A tuple because asyncpg takes each row as the sequence of the query parameters.
-    class _Row(NamedTuple):
-        id: MessageId
-        event_id: EffectId
-        source_message_id: MessageId
-        handler: EventHandlerName
-        event_name: MessageName
-        event_version: EventVersion
-        payload: str
+_INSERT_SQL: Final = """
+    INSERT INTO fidem.outbox (id, event_id, source_message_id, handler, event_name, event_version, payload)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT (id) DO NOTHING
+"""
+# PostgreSQL delivers a notification on commit and folds the same ones of a transaction into one.
+_NOTIFY_SQL: Final = f"SELECT pg_notify('{_CHANNEL}', '')"
 
-    _INSERT_SQL: ClassVar[str] = """
-        INSERT INTO fidem.outbox (id, event_id, source_message_id, handler, event_name, event_version, payload)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (id) DO NOTHING
-    """
-    # PostgreSQL delivers a notification on commit and folds the same ones of a transaction into one.
-    _NOTIFY_SQL: ClassVar[str] = f"SELECT pg_notify('{_CHANNEL}', '')"
 
-    def __init__(
-        self,
-        middleware_defs: Sequence[EffectMiddlewareDef] | None = None,
-        *,
-        notify: bool = True,
-    ) -> None:
-        super().__init__(
-            effect_type=WriteOutboxEffect,
-            handler=self._write_and_notify if notify else self._write,
-            middleware_defs=middleware_defs,
-        )
-
-    @classmethod
-    async def _write_and_notify(cls, connection: Connection, serializer: Serializer, effect: WriteOutboxEffect) -> None:
-        await cls._write(connection=connection, serializer=serializer, effect=effect)
-        await connection.execute(cls._NOTIFY_SQL)
-
-    @classmethod
-    async def _write(cls, connection: Connection, serializer: Serializer, effect: WriteOutboxEffect) -> None:
-        rows: MutableSequence[AsyncpgOutboxEffectDef._Row] = []
-        for event in effect.events:
-            # asyncpg expects jsonb as text.
-            payload = serializer.codec(type(event.event)).to_json(event.event).decode()
-            rows.extend(
-                cls._Row(
-                    id=event.handler_message_id(handler),
-                    event_id=event.event_id,
-                    source_message_id=event.source_message_id,
-                    handler=handler,
-                    event_name=event.name,
-                    event_version=event.version,
-                    payload=payload,
-                )
-                for handler in event.handlers
+async def _write(connection: Connection, serializer: Serializer, effect: WriteOutboxEffect) -> None:
+    rows: MutableSequence[_Row] = []
+    for event in effect.events:
+        # asyncpg expects jsonb as text.
+        payload = serializer.codec(type(event.event)).to_json(event.event).decode()
+        rows.extend(
+            _Row(
+                id=event.handler_message_id(handler),
+                event_id=event.event_id,
+                source_message_id=event.source_message_id,
+                handler=handler,
+                event_name=event.name,
+                event_version=event.version,
+                payload=payload,
             )
-        await connection.executemany(cls._INSERT_SQL, rows)
+            for handler in event.handlers
+        )
+    await connection.executemany(_INSERT_SQL, rows)
+
+
+async def _write_and_notify(connection: Connection, serializer: Serializer, effect: WriteOutboxEffect) -> None:
+    await _write(connection=connection, serializer=serializer, effect=effect)
+    await connection.execute(_NOTIFY_SQL)
 
 
 class _StoredEvent(NamedTuple):
@@ -301,20 +282,44 @@ class AsyncpgOutboxStore(OutboxStore[_StoredEvent]):
         await wait_for_change(self._notified, max_wait)
 
 
-class AsyncpgOutboxDispatcherDef(EffectDependencyDef[OutboxDispatcher]):
-    """A service that delivers events from the table of `OUTBOX_SECTION` with the `Pool` and `Serializer` dependencies.
+class AsyncpgOutbox:
+    """The outbox in the table of `OUTBOX_SECTION` with the `Pool`, `Connection` and `Serializer` dependencies.
 
+    The environment gets `effect_defs`, which write events in the transaction that publishes them, and
+    `dependency_defs`, whose service dispatches them. A process that only writes events gets only `effect_defs`.
+
+    `notify` wakes dispatchers up on commit, it costs a lock that queues up the commits that notify.
     The dispatcher holds a connection of the pool to listen to notifications, so the pool needs at least one more
     connection for the queries. A pooler in transaction mode does not pass notifications, so the pool should connect
     to PostgreSQL directly.
     """
 
-    def __init__(self, options: OutboxDispatcherOptions = OutboxDispatcherOptions(), name: DependencyName = "") -> None:
-        async def dispatcher(
-            environment: Environment, pool: Pool, serializer: Serializer
-        ) -> AsyncIterator[OutboxDispatcher]:
-            store = AsyncpgOutboxStore(pool=pool, serializer=serializer, event_defs=environment.event_defs)
-            async with store, OutboxDispatcher(store=store, environment=environment, options=options) as running:
-                yield running
+    def __init__(
+        self,
+        options: OutboxDispatcherOptions = OutboxDispatcherOptions(),
+        *,
+        notify: bool = True,
+        middleware_defs: Sequence[EffectMiddlewareDef] | None = None,
+    ) -> None:
+        """Middlewares replace the environment middlewares for the writes, `None` keeps them."""
+        self._options: OutboxDispatcherOptions = options
+        self.effect_defs: Final[Sequence[EffectDef[WriteOutboxEffect]]] = (
+            EffectDef(
+                effect_type=WriteOutboxEffect,
+                handler=_write_and_notify if notify else _write,
+                middleware_defs=middleware_defs,
+            ),
+        )
+        self.dependency_defs: Final[Sequence[EffectDependencyDef[object]]] = (
+            EffectDependencyDef(self._dispatcher, lifetime=EffectDependencyLifetime.SERVICE),
+        )
 
-        super().__init__(factory=dispatcher, lifetime=EffectDependencyLifetime.SERVICE, name=name)
+    async def _dispatcher(
+        self,
+        environment: Environment,
+        pool: Pool,
+        serializer: Serializer,
+    ) -> AsyncIterator[OutboxDispatcher]:
+        store = AsyncpgOutboxStore(pool=pool, serializer=serializer, event_defs=environment.event_defs)
+        async with store, OutboxDispatcher(store=store, environment=environment, options=self._options) as running:
+            yield running

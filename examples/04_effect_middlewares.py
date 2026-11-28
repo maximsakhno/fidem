@@ -3,6 +3,7 @@ from collections.abc import AsyncGenerator, MutableMapping
 from dataclasses import dataclass
 from itertools import count
 from time import perf_counter
+from typing import Final
 
 from fidem import (
     CallNext,
@@ -51,7 +52,7 @@ LOG = EffectMiddlewareDef(log)
 # ── Dependencies ──────────────────────────────────────────
 class Connection:
     def __init__(self, number: int) -> None:
-        self.number: int = number
+        self.number: Final[int] = number
 
 
 connection_numbers = count(1)

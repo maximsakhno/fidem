@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from asyncio import run
 from collections.abc import AsyncGenerator, MutableMapping
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Final
 
 from fidem import (
     Command,
@@ -45,7 +45,7 @@ class Database(ABC):
 
 class InMemoryDatabase(Database):
     def __init__(self, url: str, users: MutableMapping[str, User]) -> None:
-        self.url: str = url
+        self.url: Final[str] = url
         self._users: MutableMapping[str, User] = users
 
     async def get_user(self, user_id: str) -> User:

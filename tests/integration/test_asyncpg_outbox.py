@@ -6,7 +6,7 @@ from uuid import uuid4
 import pytest
 from asyncpg import Connection, InvalidTextRepresentationError, Pool, Record, UniqueViolationError
 
-from fidem.asyncpg import AsyncpgConnectionDef, AsyncpgOutboxEffectDef
+from fidem.asyncpg import AsyncpgConnectionDef, AsyncpgOutbox
 from fidem.di.effects import EffectDependencyDef
 from fidem.effects import DatabaseWriteEffect
 from fidem.environment import EffectDef, EnvironmentImpl
@@ -220,7 +220,8 @@ def make_environment(pool: Pool, command_defs: Collection[CommandDef[Any]]) -> E
         effect_defs=[
             EffectDef(SaveItemEffect, handle_save_item),
             EffectDef(FailEffect, handle_fail),
-            AsyncpgOutboxEffectDef(),
+            # A process that only writes events does not start the dispatcher.
+            *AsyncpgOutbox().effect_defs,
         ],
         dependency_defs=[
             EffectDependencyDef(shared_pool),

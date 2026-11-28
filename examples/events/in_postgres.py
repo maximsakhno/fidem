@@ -32,8 +32,7 @@ from fidem import EffectContext, EffectDef, EffectDependencyDef, EnvironmentImpl
 from fidem.asyncpg import (
     OUTBOX_SECTION,
     AsyncpgConnectionDef,
-    AsyncpgOutboxDispatcherDef,
-    AsyncpgOutboxEffectDef,
+    AsyncpgOutbox,
     migrate,
 )
 from fidem.pydantic import PydanticSerializer
@@ -86,6 +85,7 @@ async def handle_get_deliveries(connection: Connection, effect: GetDeliveriesEff
 
 
 async def main() -> None:
+    outbox = AsyncpgOutbox(DISPATCHER_OPTIONS)
     environment = EnvironmentImpl(
         operation_engine=make_operation_engine(),
         effect_defs=[
@@ -93,13 +93,13 @@ async def main() -> None:
             EffectDef(RecordActivityEffect, handle_record_activity),
             EffectDef(GetDeliveriesEffect, handle_get_deliveries),
             make_mailer_def(),
-            AsyncpgOutboxEffectDef(),
+            *outbox.effect_defs,
         ],
         dependency_defs=[
             EffectDependencyDef(pool),
             EffectDependencyDef(serializer),
             AsyncpgConnectionDef(),
-            AsyncpgOutboxDispatcherDef(DISPATCHER_OPTIONS),
+            *outbox.dependency_defs,
         ],
     )
     async with environment:
