@@ -148,7 +148,7 @@ class TestAsyncpgOutboxDispatcher:
         async with environment:
             # The first take of the dispatcher would find the row without a notification.
             await sleep(0.2)
-            await environment.handle(TestCommand(), message_id)
+            await environment.handle(TestCommand(), message_id=message_id)
             row = await wait_for_status(outbox_pool, message_id, "done")
 
         assert work.values == ["published"]
@@ -162,7 +162,7 @@ class TestAsyncpgOutboxDispatcher:
         message_id = uuid4().hex
 
         async with environment:
-            await environment.handle(TestCommand(), message_id)
+            await environment.handle(TestCommand(), message_id=message_id)
             await wait_for_status(outbox_pool, message_id, "done")
 
         assert work.values == ["published"]
@@ -174,7 +174,7 @@ class TestAsyncpgOutboxDispatcher:
         message_id = uuid4().hex
 
         async with environment:
-            await environment.handle(TestCommand(), message_id)
+            await environment.handle(TestCommand(), message_id=message_id)
             row = await wait_for_delivery(outbox_pool, message_id, lambda row: row["last_error"] is not None)
 
         assert (row["status"], row["attempts"], row["available_now"]) == ("pending", 1, False)
@@ -192,7 +192,7 @@ class TestAsyncpgOutboxDispatcher:
         async with environment:
             # The first take of the dispatcher would find the row without a notification.
             await sleep(0.2)
-            await environment.handle(TestCommand(), message_id)
+            await environment.handle(TestCommand(), message_id=message_id)
             row = await wait_for_status(outbox_pool, message_id, "done")
 
         assert row["attempts"] == 2
@@ -234,7 +234,7 @@ class TestAsyncpgOutboxDispatcher:
         message_id = uuid4().hex
 
         async with environment:
-            await environment.handle(TestCommand(), message_id)
+            await environment.handle(TestCommand(), message_id=message_id)
             row = await wait_for_status(outbox_pool, message_id, "failed")
 
         assert row["attempts"] == 1
@@ -246,7 +246,7 @@ class TestAsyncpgOutboxDispatcher:
         message_id = uuid4().hex
 
         async with environment:
-            await environment.handle(TestCommand(), message_id)
+            await environment.handle(TestCommand(), message_id=message_id)
             async with timeout(5):
                 await work.started.wait()
 

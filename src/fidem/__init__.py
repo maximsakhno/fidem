@@ -52,8 +52,13 @@ from fidem.errors import (
     Error,
 )
 from fidem.guards import (
+    AmbiguousGuardInputError,
     Guard,
     GuardDef,
+    GuardInputDef,
+    GuardInputNotDefinedError,
+    MissingGuardInputError,
+    UnsupportedGuardInputTypeError,
 )
 from fidem.messages import (
     AtomicEffectful,
@@ -149,6 +154,7 @@ __all__ = [
     "IMPLICIT_WRITE_TRANSACTION",
     "STDLIB_EFFECT_DEFS",
     "AmbiguousDependencyError",
+    "AmbiguousGuardInputError",
     "AnyEventHandlerDef",
     "AnyTransaction",
     "AtomicCommandDef",
@@ -206,6 +212,8 @@ __all__ = [
     "ExternalWriteEffect",
     "Guard",
     "GuardDef",
+    "GuardInputDef",
+    "GuardInputNotDefinedError",
     "HandledEffect",
     "InternalEffect",
     "JsonSchema",
@@ -222,6 +230,7 @@ __all__ = [
     "MessageNotDefinedError",
     "MiddlewareName",
     "MissingAnnotationError",
+    "MissingGuardInputError",
     "NewUuidEffect",
     "NowEffect",
     "OperationEngine",
@@ -253,6 +262,7 @@ __all__ = [
     "UnsupportedAtomicResultError",
     "UnsupportedEffectError",
     "UnsupportedFunctionError",
+    "UnsupportedGuardInputTypeError",
     "UnsupportedParameterError",
     "UnsupportedReturnTypeError",
     "UnsupportedTypeError",

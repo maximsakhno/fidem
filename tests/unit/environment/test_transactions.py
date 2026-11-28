@@ -6,7 +6,7 @@ import pytest
 
 from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
 from fidem.environment import CallNext, EffectDef, EffectMiddlewareDef, EnvironmentImpl
-from fidem.messages import AtomicEffectful, MessageContext, StagedEffectful
+from fidem.messages import AtomicEffectful, StagedEffectful
 from fidem.operation_engine.definitions import AtomicCommandDef, StagedCommandDef
 from fidem.operation_engine.engine import OperationEngineImpl
 from fidem.operation_engine.instructions import EffectCall, ExecutionPlan, OperationEngine, RunTransactionInstruction
@@ -224,7 +224,7 @@ class TestTransactions:
             transaction_contexts.append(transaction_context)
             yield Connection()
 
-        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
+        def execution_plan(**_: object) -> ExecutionPlan[object]:
             yield RunTransactionInstruction(transaction=read_transaction, plan=read_plan())
             yield RunTransactionInstruction(transaction=write_transaction, plan=write_plan())
             return "command_result"
@@ -264,7 +264,7 @@ class TestTransactions:
     def _in_transaction(plan: Callable[[], ExecutionPlan[object]]) -> Callable[..., ExecutionPlan[object]]:
         """Makes an execution plan that runs the plan in a transaction and returns its result or error."""
 
-        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[object]:
+        def execution_plan(**_: object) -> ExecutionPlan[object]:
             try:
                 return (yield RunTransactionInstruction(transaction=write_transaction, plan=plan()))
             except ValueError as exc:

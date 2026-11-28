@@ -17,7 +17,7 @@ from fidem.effects import (
     ExternalWriteEffect,
     InternalEffect,
 )
-from fidem.guards import GuardContainer, GuardDef, GuardedFunction, GuardResolutionStep, GuardValues
+from fidem.guards import GuardContainer, GuardDef, GuardedFunction, GuardInputDef, GuardResolutionStep, GuardValues
 from fidem.messages import QUERY_EFFECT_TYPES, Command, Event, EventHandlerName, Message, MessageContext, Query
 from fidem.operation_engine.definitions import (
     AnyEventHandlerDef,
@@ -25,6 +25,7 @@ from fidem.operation_engine.definitions import (
     AtomicEventHandlerDef,
     CommandDef,
     EventDef,
+    EventHandlerDef,
     ExecutionMode,
     MessageMiddlewareDef,
     Proceed,
@@ -112,6 +113,8 @@ class _PreparedMessage[MessageDefT: _AnyMessageDef]:
     middlewares: Sequence[_PreparedMiddleware]
     """Middlewares from the outer one."""
     handler: GuardedFunction
+    input_keys: Collection[DependencyKey]
+    """Inputs the guards need."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,7 +225,7 @@ class OperationEngineImpl(OperationEngine):
         command_defs: Collection[CommandDef[Any]] = (),
         query_defs: Collection[QueryDef[Any]] = (),
         event_defs: Collection[EventDef[Any]] = (),
-        guard_defs: Collection[GuardDef[Any]] = (),
+        guard_defs: Collection[GuardDef[Any] | GuardInputDef[Any]] = (),
         middleware_defs: Sequence[MessageMiddlewareDef] = (),
     ) -> None:
         self._check_middleware_defs(middleware_defs)
@@ -279,7 +282,13 @@ class OperationEngineImpl(OperationEngine):
         if message_def.middleware_defs is not None:
             self._check_middleware_defs(message_def.middleware_defs)
             middleware_defs = message_def.middleware_defs
-        guards = self._guard_container.prepare(
+        # The dispatcher runs event handlers, and it has no caller whose inputs it could pass.
+        prepare_guards = (
+            self._guard_container.prepare_without_inputs
+            if isinstance(message_def, EventHandlerDef)
+            else self._guard_container.prepare
+        )
+        guards = prepare_guards(
             message_type=message_type,
             functions=(*(middleware_def.middleware for middleware_def in middleware_defs), message_def.handler),
         )
@@ -293,6 +302,7 @@ class OperationEngineImpl(OperationEngine):
                 for middleware_def, middleware in zip(middleware_defs, guards.functions[:-1], strict=True)
             ),
             handler=guards.functions[-1],
+            input_keys=guards.input_keys,
         )
 
     def _prepare_event(
@@ -324,11 +334,13 @@ class OperationEngineImpl(OperationEngine):
         self,
         message: Command[ResultT] | Query[ResultT],
         message_context: MessageContext,
+        inputs: Collection[object] = (),
     ) -> ExecutionPlan[ResultT]:
         prepared_message = self._type_to_message.get(type(message))
         if prepared_message is None:
             raise MessageNotDefinedError(type(message))
-        return (yield from self._run_operation(prepared_message, message, message_context))
+        key_to_input = self._guard_container.match_inputs(inputs, prepared_message.input_keys)
+        return (yield from self._run_operation(prepared_message, message, message_context, key_to_input))
 
     def deliver(
         self,
@@ -342,29 +354,37 @@ class OperationEngineImpl(OperationEngine):
         prepared_handler = prepared_event.handlers.get(handler)
         if prepared_handler is None:
             raise EventHandlerNotDefinedError(type(event), handler)
-        yield from self._run_operation(prepared_handler, event, message_context)
+        yield from self._run_operation(prepared_handler, event, message_context, {})
 
     def _run_operation[MessageDefT: _AnyMessageDef](
         self,
         prepared_message: _PreparedMessage[MessageDefT],
         message: Message[Any],
         message_context: MessageContext,
+        key_to_input: Mapping[DependencyKey, object],
     ) -> ExecutionPlan[Any]:
         message_def = prepared_message.message_def
         if not isinstance(message_def, QueryDef) and message_def.execution_mode != ExecutionMode.EPHEMERAL:
             raise NotImplementedError(f"Execution mode {message_def.execution_mode} is not implemented yet")
-        execution = self._make_execution(message, message_context)
+        execution = self._make_execution(message, message_context, key_to_input)
         try:
             return (yield from _run_chain(prepared_message, execution))
         except _EngineError as exc:
             raise exc.error.with_traceback(exc.__traceback__) from None
 
-    def _make_execution(self, message: Message[Any], message_context: MessageContext) -> _Execution:
+    def _make_execution(
+        self,
+        message: Message[Any],
+        message_context: MessageContext,
+        key_to_input: Mapping[DependencyKey, object],
+    ) -> _Execution:
         message_id = message_context.message_id
+        values = make_message_dependencies(message, message_context)
+        values.update(key_to_input)
         return _Execution(
             message=message,
             message_context=message_context,
-            values=make_message_dependencies(message, message_context),
+            values=values,
             # The length prefix keeps the seeds of different messages apart whatever their ids are.
             seed=f"{len(message_id)}:{message_id}",
             declared_events=self._type_to_event,

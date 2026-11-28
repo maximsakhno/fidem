@@ -25,16 +25,17 @@ class EffectHandlerCall:
 
 
 class TestHandle:
-    async def test_passes_command_and_message_context_into_operation_engine(self) -> None:
+    async def test_passes_command_message_context_and_inputs_into_operation_engine(self) -> None:
         command = TestCommand()
         operation_engine_mock = make_operation_engine_mock(GeneratorFunctionStub())
 
         async with EnvironmentImpl(operation_engine=operation_engine_mock) as environment:
-            await environment.handle(command, "test_message_id")
+            await environment.handle(command, "first_input", "second_input", message_id="test_message_id")
 
         operation_engine_mock.handle.assert_called_once_with(
             message=command,
             message_context=MessageContext(message_id="test_message_id"),
+            inputs=("first_input", "second_input"),
         )
 
     async def test_passes_same_message_context_into_operation_engine_and_effect_handler(self) -> None:
@@ -99,7 +100,7 @@ class TestHandle:
         assert calls == [EffectHandlerCall(context=instruction.call.effect_context, effect=instruction.call.effect)]
 
     async def test_throws_effect_handler_error_into_execution_plan(self) -> None:
-        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
+        def execution_plan(**_: object) -> ExecutionPlan[str]:
             try:
                 yield make_instruction()
             except ValueError as exc:
@@ -132,7 +133,7 @@ class TestHandle:
         assert exc_info.value is effect_error
 
     async def test_does_not_throw_effect_not_defined_error_into_execution_plan(self) -> None:
-        def execution_plan(message: TestCommand, message_context: MessageContext) -> ExecutionPlan[str]:
+        def execution_plan(**_: object) -> ExecutionPlan[str]:
             nonlocal is_execution_plan_closed
             try:
                 yield make_instruction()
@@ -222,8 +223,8 @@ class TestExecuteWithOperationEngine:
         )
 
         async with environment:
-            await environment.handle(TestCommand(), "test_message_id")
-            await environment.handle(TestCommand(), "test_message_id")
+            await environment.handle(TestCommand(), message_id="test_message_id")
+            await environment.handle(TestCommand(), message_id="test_message_id")
 
         assert effect_ids[:2] == effect_ids[2:]
         assert len(set(effect_ids)) == 2
@@ -250,6 +251,6 @@ class TestGuards:
         )
 
         async with environment:
-            result = await environment.handle(TestCommand(), "test_message_id")
+            result = await environment.handle(TestCommand(), message_id="test_message_id")
 
         assert result == "test_message_id effect_result"

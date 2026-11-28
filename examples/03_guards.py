@@ -1,7 +1,6 @@
 from asyncio import run
 from collections.abc import MutableMapping
-from dataclasses import dataclass, replace
-from typing import Any
+from dataclasses import dataclass, field, replace
 
 from fidem import (
     Command,
@@ -12,6 +11,7 @@ from fidem import (
     EnvironmentImpl,
     Guard,
     GuardDef,
+    GuardInputDef,
     OperationEngineImpl,
     QueryEffect,
     StagedCommandDef,
@@ -64,24 +64,27 @@ async def handle_save_user(effect: SaveUserEffect) -> User:
 
 
 # ── Commands ──────────────────────────────────────────────
+# The command holds only business data, the token comes along with it as a guard input.
 @dataclass(frozen=True, slots=True)
-class AuthenticatedCommand[ResultT](Command[ResultT]):
-    token: str
-
-
-@dataclass(frozen=True, slots=True)
-class RenameUserCommand(AuthenticatedCommand[User]):
+class RenameUserCommand(Command[User]):
     user_id: str
     name: str
 
 
 # ── Guards ────────────────────────────────────────────────
+# A guard input is matched by its class, so the token gets a class of its own.
+@dataclass(frozen=True, slots=True)
+class AccessToken:
+    raw: str = field(repr=False)
+    """Hidden from repr, so the token does not get into logs with an error."""
+
+
 class TokenVerifier:
     def __init__(self, secret: str) -> None:
         self._secret: str = secret
 
-    def verify(self, token: str) -> str:
-        user_id, _, secret = token.partition(":")
+    def verify(self, token: AccessToken) -> str:
+        user_id, _, secret = token.raw.partition(":")
         if secret != self._secret:
             raise AuthenticationError("Invalid token")
         return user_id
@@ -99,9 +102,8 @@ class Admin:
 
 # Guards get their settings through a closure.
 def make_current_user(verifier: TokenVerifier) -> Guard[CurrentUser]:
-    # The guard gets the command by its base class, so it serves every authenticated command.
-    def current_user(command: AuthenticatedCommand[Any]) -> Effectful[CurrentUser, QueryEffect]:
-        user_id = verifier.verify(command.token)
+    def current_user(token: AccessToken) -> Effectful[CurrentUser, QueryEffect]:
+        user_id = verifier.verify(token)
         return CurrentUser((yield from GetUserEffect(user_id)))
 
     return current_user
@@ -128,6 +130,7 @@ async def main() -> None:
         operation_engine=OperationEngineImpl(
             command_defs=[StagedCommandDef("rename_user", RenameUserCommand, rename_user)],
             guard_defs=[
+                GuardInputDef(AccessToken),
                 GuardDef(make_current_user(TokenVerifier(TOKEN_SECRET))),
                 GuardDef(admin),
             ],
@@ -140,18 +143,18 @@ async def main() -> None:
 
     async with environment:
         print("\n=== Admin renames a user ===")
-        user = await environment.handle(RenameUserCommand(token="u1:secret", user_id="u2", name="Robert"))
+        user = await environment.handle(RenameUserCommand(user_id="u2", name="Robert"), AccessToken("u1:secret"))
         print(f"Result: {user}")
 
         print("\n=== Not an admin ===")
         try:
-            await environment.handle(RenameUserCommand(token="u2:secret", user_id="u1", name="Alicia"))
+            await environment.handle(RenameUserCommand(user_id="u1", name="Alicia"), AccessToken("u2:secret"))
         except PermissionDeniedError as exc:
             print(f"Error: {exc}")
 
         print("\n=== Invalid token ===")
         try:
-            await environment.handle(RenameUserCommand(token="u1:wrong", user_id="u2", name="Bobby"))
+            await environment.handle(RenameUserCommand(user_id="u2", name="Bobby"), AccessToken("u1:wrong"))
         except AuthenticationError as exc:
             print(f"Error: {exc}")
         print()
