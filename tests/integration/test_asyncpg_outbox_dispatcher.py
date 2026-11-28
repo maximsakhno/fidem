@@ -2,7 +2,7 @@ from asyncio import Event as AsyncioEvent, gather, get_running_loop, sleep, time
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, Final
 from uuid import uuid4
 
 import pytest
@@ -10,8 +10,7 @@ from asyncpg import Pool, Record
 
 from fidem.asyncpg import (
     AsyncpgConnectionDef,
-    AsyncpgOutboxDispatcherDef,
-    AsyncpgOutboxEffectDef,
+    AsyncpgOutbox,
     AsyncpgOutboxStore,
 )
 from fidem.di.effects import EffectDependencyDef
@@ -59,8 +58,8 @@ class Work:
     """The effect handler of event handlers, which records their work, raises the errors in turn or blocks."""
 
     def __init__(self, errors: Sequence[Exception] = (), gate: AsyncioEvent | None = None) -> None:
-        self.values: list[str] = []
-        self.started: AsyncioEvent = AsyncioEvent()
+        self.values: Final[list[str]] = []
+        self.started: Final[AsyncioEvent] = AsyncioEvent()
         self._errors: list[Exception] = list(errors)
         self._gate: AsyncioEvent | None = gate
 
@@ -101,17 +100,18 @@ def make_environment(
     async def serializer() -> AsyncGenerator[Serializer]:
         yield PydanticSerializer()
 
+    outbox = AsyncpgOutbox(options, notify=notify)
     return EnvironmentImpl(
         operation_engine=OperationEngineImpl(
             command_defs=[StagedCommandDef("test", TestCommand, publish)],
             event_defs=[make_event_def()],
         ),
-        effect_defs=[EffectDef(WorkEffect, work.handle), AsyncpgOutboxEffectDef(notify=notify)],
+        effect_defs=[EffectDef(WorkEffect, work.handle), *outbox.effect_defs],
         dependency_defs=[
             EffectDependencyDef(shared_pool),
             EffectDependencyDef(serializer),
             AsyncpgConnectionDef(),
-            AsyncpgOutboxDispatcherDef(options),
+            *outbox.dependency_defs,
         ],
     )
 

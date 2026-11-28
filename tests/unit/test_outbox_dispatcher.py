@@ -1,6 +1,7 @@
 from asyncio import CancelledError, Event as AsyncioEvent, create_task, get_running_loop, sleep
 from collections.abc import Collection, MutableSequence, Sequence
 from datetime import timedelta
+from typing import Final
 from unittest.mock import Mock
 
 import pytest
@@ -77,8 +78,8 @@ class StoreStub(OutboxStore[None]):
     """Gives out the deliveries once, after the gate opens, and records the releases."""
 
     def __init__(self, deliveries: Sequence[OutboxDelivery[None]], gate: AsyncioEvent | None = None) -> None:
-        self.taking: AsyncioEvent = AsyncioEvent()
-        self.released: MutableSequence[OutboxDelivery[None]] = []
+        self.taking: Final[AsyncioEvent] = AsyncioEvent()
+        self.released: Final[MutableSequence[OutboxDelivery[None]]] = []
         self._deliveries: Sequence[OutboxDelivery[None]] = deliveries
         self._gate: AsyncioEvent | None = gate
 

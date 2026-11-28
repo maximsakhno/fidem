@@ -2,7 +2,7 @@ from asyncio import Event as AsyncioEvent, get_running_loop, sleep, timeout
 from collections.abc import Callable, Collection, MutableSequence, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
@@ -65,10 +65,10 @@ class Deliveries:
     """Records the work of event handlers, a failure or a gate can be set for it."""
 
     def __init__(self) -> None:
-        self.calls: MutableSequence[tuple[str, str]] = []
+        self.calls: Final[MutableSequence[tuple[str, str]]] = []
         self.failures: int = 0
         self.gate: AsyncioEvent | None = None
-        self.started: AsyncioEvent = AsyncioEvent()
+        self.started: Final[AsyncioEvent] = AsyncioEvent()
         self.running: int = 0
         self.max_running: int = 0
 
@@ -304,6 +304,27 @@ class TestMemoryOutbox:
             await outbox.drain()
 
         assert outbox.rows == ()
+
+    async def test_replaces_environment_middlewares_of_writes_with_its_own(self) -> None:
+        async def fail_outbox(effect_call: EffectCall, call_next: CallNext) -> object:
+            if not isinstance(effect_call.effect, WriteOutboxEffect):
+                return await call_next()
+            raise ValueError("middleware_error")
+
+        outbox = MemoryOutbox(middleware_defs=())
+        deliveries = Deliveries()
+        environment = make_environment(
+            outbox=outbox,
+            deliveries=deliveries,
+            command_handler=publish(["a"]),
+            effect_middleware_defs=[EffectMiddlewareDef(fail_outbox)],
+        )
+
+        async with environment:
+            await environment.handle(TestCommand())
+            await outbox.drain()
+
+        assert statuses(outbox.rows) == [("handler0", OutboxStatus.DONE, 1)]
 
     async def test_drain_waits_for_deliveries_of_events_that_handlers_publish(self) -> None:
         outbox = MemoryOutbox()
