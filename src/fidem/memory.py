@@ -6,10 +6,10 @@ from enum import Enum
 from heapq import nsmallest
 from typing import Final
 
-from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
-from fidem.environment import EffectDef, EffectMiddlewareDef, Environment
-from fidem.messages import Event, EventHandlerName, MessageId, MessageName
-from fidem.outbox import (
+from fidem.core.di.effects import EffectDependencyDef, EffectDependencyLifetime
+from fidem.core.environment import EffectDef, EffectMiddlewareDef, Environment
+from fidem.core.messages import Event, EventHandlerName, MessageId, MessageName
+from fidem.core.outbox import (
     OutboxDelivery,
     OutboxDispatcher,
     OutboxDispatcherOptions,

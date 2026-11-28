@@ -5,13 +5,13 @@ from typing import Any
 
 import pytest
 
-from fidem.di.core import DependencyNotFoundError
-from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
-from fidem.effects import Effect, EffectContext
-from fidem.environment import EffectDef, EnvironmentImpl
-from fidem.messages import Command, MessageContext
-from fidem.operation_engine.instructions import ExecutionPlan
-from fidem.testing import YieldStep
+from fidem.core.di.core import DependencyNotFoundError
+from fidem.core.di.effects import EffectDependencyDef, EffectDependencyLifetime
+from fidem.core.effects import Effect, EffectContext
+from fidem.core.environment import EffectDef, EnvironmentImpl
+from fidem.core.messages import Command, MessageContext
+from fidem.core.operation_engine.instructions import ExecutionPlan
+from fidem.core.testing import YieldStep
 from tests.effects import TestInternalEffect
 from tests.messages import TestCommand
 from tests.stubs import GeneratorFunctionStub

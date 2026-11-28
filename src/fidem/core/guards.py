@@ -2,7 +2,7 @@ from collections.abc import Callable, Collection, Mapping, MutableMapping, Seque
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from fidem.di.core import (
+from fidem.core.di.core import (
     MESSAGE_CONTEXT_KEY,
     MESSAGE_KEY,
     BoundProvider,
@@ -18,9 +18,9 @@ from fidem.di.core import (
     get_parameters,
     make_key,
 )
-from fidem.effects import Effectful
-from fidem.errors import Error
-from fidem.messages import Message, QueryEffect
+from fidem.core.effects import Effectful
+from fidem.core.errors import Error
+from fidem.core.messages import Message, QueryEffect
 
 __all__ = [
     "AmbiguousGuardInputError",

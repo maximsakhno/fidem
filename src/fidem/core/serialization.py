@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, MutableMapping, Sequence
 from typing import Any, final, overload
 
-from fidem.errors import Error
+from fidem.core.errors import Error
 
 __all__ = [
     "Codec",

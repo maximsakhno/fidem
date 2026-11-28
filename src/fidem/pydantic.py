@@ -3,7 +3,7 @@ from typing import Any, ClassVar, cast, override
 from pydantic import PydanticUserError, TypeAdapter, ValidationError
 from pydantic_core import to_json
 
-from fidem.serialization import (
+from fidem.core.serialization import (
     Codec,
     DeserializationError,
     JsonSchema,

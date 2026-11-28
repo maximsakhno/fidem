@@ -8,7 +8,7 @@ from typing import Final, cast
 
 from asyncpg import Connection, Pool
 
-from fidem.errors import Error
+from fidem.core.errors import Error
 
 __all__ = [
     "DuplicateMigrationSectionError",

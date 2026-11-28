@@ -21,7 +21,7 @@ from itertools import chain
 from types import TracebackType
 from typing import Any, ClassVar, Final, Self
 
-from fidem.di.core import (
+from fidem.core.di.core import (
     MESSAGE_CONTEXT_KEY,
     MESSAGE_KEY,
     DependencyArgument,
@@ -36,10 +36,10 @@ from fidem.di.core import (
     make_key,
     make_message_dependencies,
 )
-from fidem.effects import Effect, EffectContext
-from fidem.errors import Error
-from fidem.messages import Message, MessageContext
-from fidem.transactions import TransactionContext
+from fidem.core.effects import Effect, EffectContext
+from fidem.core.errors import Error
+from fidem.core.messages import Message, MessageContext
+from fidem.core.transactions import TransactionContext
 
 __all__ = [
     "EFFECT_CONTEXT_KEY",

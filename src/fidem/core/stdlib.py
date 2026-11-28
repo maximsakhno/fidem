@@ -11,8 +11,8 @@ from secrets import randbelow, token_bytes
 from typing import Any, Final
 from uuid import UUID, uuid4
 
-from fidem.effects import InternalEffect
-from fidem.environment import EffectDef
+from fidem.core.effects import InternalEffect
+from fidem.core.environment import EffectDef
 
 __all__ = [
     "STDLIB_EFFECT_DEFS",

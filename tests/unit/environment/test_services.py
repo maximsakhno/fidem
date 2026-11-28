@@ -2,12 +2,12 @@ from collections.abc import AsyncGenerator, MutableSequence
 
 import pytest
 
-from fidem.di.core import DependencyKey
-from fidem.di.effects import DependencyLifetimeError, EffectDependencyDef, EffectDependencyLifetime
-from fidem.environment import EffectDef, Environment, EnvironmentImpl, EnvironmentNotStartedError
-from fidem.messages import MessageContext
-from fidem.operation_engine.definitions import EventDef
-from fidem.testing import YieldStep
+from fidem.core.di.core import DependencyKey
+from fidem.core.di.effects import DependencyLifetimeError, EffectDependencyDef, EffectDependencyLifetime
+from fidem.core.environment import EffectDef, Environment, EnvironmentImpl, EnvironmentNotStartedError
+from fidem.core.messages import MessageContext
+from fidem.core.operation_engine.definitions import EventDef
+from fidem.core.testing import YieldStep
 from tests.effects import TestInternalEffect
 from tests.messages import TestCommand, TestEvent
 from tests.stubs import GeneratorFunctionStub

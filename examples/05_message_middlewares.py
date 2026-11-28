@@ -3,7 +3,7 @@ from collections.abc import MutableMapping, MutableSet
 from dataclasses import dataclass
 from typing import Any
 
-from fidem import (
+from fidem.core import (
     Command,
     EffectContext,
     EffectDef,

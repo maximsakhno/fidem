@@ -11,17 +11,17 @@ from asyncpg import Pool, Record
 from fidem.asyncpg import (
     AsyncpgConnectionDef,
     AsyncpgOutbox,
-    AsyncpgOutboxStore,
 )
-from fidem.di.effects import EffectDependencyDef
-from fidem.effects import InternalEffect
-from fidem.environment import EffectDef, EnvironmentImpl
-from fidem.messages import Event, StagedEffectful
-from fidem.operation_engine.definitions import EventDef, StagedCommandDef, StagedEventHandlerDef
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.outbox import OutboxDispatcherOptions, RetryPolicy
+from fidem.asyncpg.outbox import AsyncpgOutboxStore
+from fidem.core.di.effects import EffectDependencyDef
+from fidem.core.effects import InternalEffect
+from fidem.core.environment import EffectDef, EnvironmentImpl
+from fidem.core.messages import Event, StagedEffectful
+from fidem.core.operation_engine.definitions import EventDef, StagedCommandDef, StagedEventHandlerDef
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.outbox import OutboxDispatcherOptions, RetryPolicy
+from fidem.core.serialization import Serializer
 from fidem.pydantic import PydanticSerializer
-from fidem.serialization import Serializer
 from tests.messages import TestCommand
 
 pytestmark = [

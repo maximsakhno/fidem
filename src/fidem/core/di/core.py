@@ -5,10 +5,10 @@ from graphlib import CycleError, TopologicalSorter
 from inspect import Parameter, Signature, signature
 from typing import Any, Final, get_args, get_origin
 
-from fidem._functions import UnsupportedFunctionError, check_generator_function
-from fidem._validation import check_unique
-from fidem.errors import Error
-from fidem.messages import Message, MessageContext
+from fidem.core._functions import UnsupportedFunctionError, check_generator_function
+from fidem.core._validation import check_unique
+from fidem.core.errors import Error
+from fidem.core.messages import Message, MessageContext
 
 __all__ = [
     "MESSAGE_CONTEXT_KEY",

@@ -1,4 +1,4 @@
-from fidem.messages import Command, Event, Query
+from fidem.core.messages import Command, Event, Query
 
 
 class TestCommand(Command[str]):

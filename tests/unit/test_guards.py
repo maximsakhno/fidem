@@ -3,7 +3,7 @@ from typing import Any, NewType, Protocol
 
 import pytest
 
-from fidem.di.core import (
+from fidem.core.di.core import (
     MESSAGE_CONTEXT_KEY,
     DependencyKey,
     DependencyNotFoundError,
@@ -13,8 +13,8 @@ from fidem.di.core import (
     UnsupportedReturnTypeError,
     make_message_dependencies,
 )
-from fidem.effects import Effect, Effectful
-from fidem.guards import (
+from fidem.core.effects import Effect, Effectful
+from fidem.core.guards import (
     GuardContainer,
     GuardDef,
     GuardInputDef,
@@ -23,8 +23,8 @@ from fidem.guards import (
     PreparedGuards,
     UnsupportedGuardInputTypeError,
 )
-from fidem.messages import Command, Message, MessageContext, QueryEffect
-from fidem.testing import assert_generator
+from fidem.core.messages import Command, Message, MessageContext, QueryEffect
+from fidem.core.testing import assert_generator
 from tests.messages import TestCommand
 from tests.stubs import run
 

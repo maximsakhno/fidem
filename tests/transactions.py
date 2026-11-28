@@ -1,4 +1,9 @@
-from fidem.transactions import ReadTransaction, ReadTransactionEffectful, WriteTransaction, WriteTransactionEffectful
+from fidem.core.transactions import (
+    ReadTransaction,
+    ReadTransactionEffectful,
+    WriteTransaction,
+    WriteTransactionEffectful,
+)
 from tests.effects import TestDatabaseReadEffect, TestDatabaseWriteEffect
 
 

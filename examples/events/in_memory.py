@@ -20,7 +20,7 @@ from examples.events.common import (
     make_operation_engine,
     register_and_report,
 )
-from fidem import EffectContext, EffectDef, EnvironmentImpl
+from fidem.core import EffectContext, EffectDef, EnvironmentImpl
 from fidem.memory import MemoryOutbox
 
 USERS: MutableMapping[str, str] = {}

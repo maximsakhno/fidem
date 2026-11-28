@@ -16,7 +16,8 @@ from os import environ
 
 from asyncpg import Connection, Pool, create_pool
 
-from fidem import (
+from fidem.asyncpg import AsyncpgConnectionDef
+from fidem.core import (
     AtomicCommandDef,
     AtomicEffectful,
     Command,
@@ -33,7 +34,6 @@ from fidem import (
     WriteTransaction,
     WriteTransactionEffectful,
 )
-from fidem.asyncpg import AsyncpgConnectionDef
 
 DATABASE_URL = environ.get("DATABASE_URL", "postgresql://postgres@localhost:5432/postgres")
 SCHEMA = """
@@ -171,7 +171,7 @@ async def main() -> None:
     environment = EnvironmentImpl(
         operation_engine=OperationEngineImpl(
             command_defs=[AtomicCommandDef("transfer", TransferCommand, transfer)],
-            query_defs=[QueryDef("get_account", GetAccountQuery, get_account)],
+            query_defs=[QueryDef(GetAccountQuery, get_account)],
         ),
         effect_defs=[
             EffectDef(GetAccountEffect, handle_get_account),

@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from inspect import isgeneratorfunction
 
-from fidem.errors import Error
+from fidem.core.errors import Error
 
 __all__ = [
     "UnsupportedFunctionError",

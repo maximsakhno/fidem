@@ -8,13 +8,18 @@ import pytest
 from asyncpg import Connection, DivisionByZeroError, Pool, ReadOnlySQLTransactionError
 
 from fidem.asyncpg import AsyncpgConnectionDef, AsyncpgTransactionOptions, TransactionRolledBackError
-from fidem.di.effects import EffectDependencyDef
-from fidem.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, Effectful
-from fidem.environment import EffectDef, EnvironmentImpl
-from fidem.messages import AtomicEffectful, QueryEffectful
-from fidem.operation_engine.definitions import AtomicCommandDef, CommandDef, QueryDef, StagedCommandDef
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.transactions import ReadTransaction, ReadTransactionEffectful, WriteTransaction, WriteTransactionEffectful
+from fidem.core.di.effects import EffectDependencyDef
+from fidem.core.effects import DatabaseReadEffect, DatabaseWriteEffect, Effect, Effectful
+from fidem.core.environment import EffectDef, EnvironmentImpl
+from fidem.core.messages import AtomicEffectful, QueryEffectful
+from fidem.core.operation_engine.definitions import AtomicCommandDef, CommandDef, QueryDef, StagedCommandDef
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.transactions import (
+    ReadTransaction,
+    ReadTransactionEffectful,
+    WriteTransaction,
+    WriteTransactionEffectful,
+)
 from tests.messages import TestCommand, TestQuery
 
 pytestmark = [
@@ -239,7 +244,7 @@ class TestTransactions:
         await pool.execute("INSERT INTO items (id, value) VALUES ($1, 'initial')", item_id)
         environment = make_environment(
             pool=pool,
-            query_defs=[QueryDef("test", TestQuery, handler)],
+            query_defs=[QueryDef(TestQuery, handler)],
             connection_def=connection_def,
         )
 
@@ -258,7 +263,7 @@ class TestTransactions:
             yield from save_item()
 
         item_id = uuid4().hex
-        environment = make_environment(pool, query_defs=[QueryDef("test", TestQuery, handler)])
+        environment = make_environment(pool, query_defs=[QueryDef(TestQuery, handler)])
 
         async with environment:
             with pytest.raises(ReadOnlySQLTransactionError):
@@ -312,9 +317,7 @@ class TestTransactionOptions:
         def handler() -> QueryEffectful[TransactionState]:
             return (yield from ReadTransactionStateEffect())
 
-        environment = make_environment(
-            pool, query_defs=[QueryDef("test", TestQuery, handler)], connection_def=connection_def
-        )
+        environment = make_environment(pool, query_defs=[QueryDef(TestQuery, handler)], connection_def=connection_def)
 
         async with environment:
             result = await environment.handle(TestQuery())
@@ -369,7 +372,7 @@ class TestTransactionOptions:
     ) -> None:
         environment = make_environment(
             pool=pool,
-            query_defs=[QueryDef("test", TestQuery, get_state_in_read_transaction)],
+            query_defs=[QueryDef(TestQuery, get_state_in_read_transaction)],
             connection_def=connection_def,
         )
 

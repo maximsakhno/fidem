@@ -1,8 +1,8 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from fidem.effects import DatabaseWriteEffect, EffectId
-from fidem.messages import Event, EventHandlerName, EventVersion, MessageId, MessageName
+from fidem.core.effects import DatabaseWriteEffect, EffectId
+from fidem.core.messages import Event, EventHandlerName, EventVersion, MessageId, MessageName
 
 __all__ = [
     "OutboxEvent",

@@ -1,7 +1,7 @@
 from asyncio import run
 from dataclasses import dataclass
 
-from fidem import (
+from fidem.core import (
     Command,
     DatabaseReadEffect,
     DatabaseWriteEffect,

@@ -3,21 +3,21 @@ from typing import Any
 
 import pytest
 
-from fidem.di.core import UnsupportedFunctionError
-from fidem.effects import Effect, Effectful
-from fidem.guards import GuardDef
-from fidem.messages import QueryEffect, QueryEffectful
-from fidem.operation_engine.definitions import (
+from fidem.core.di.core import UnsupportedFunctionError
+from fidem.core.effects import Effect, Effectful
+from fidem.core.guards import GuardDef
+from fidem.core.messages import QueryEffect, QueryEffectful
+from fidem.core.operation_engine.definitions import (
     AtomicCommandDef,
     MessageMiddlewareDef,
     MessageMiddlewareEffectful,
     Proceed,
     StagedCommandDef,
 )
-from fidem.operation_engine.errors import UnsupportedEffectError
-from fidem.operation_engine.instructions import HandledEffect, RunTransactionInstruction
-from fidem.testing import YieldStep, assert_generator
-from fidem.transactions import (
+from fidem.core.operation_engine.errors import UnsupportedEffectError
+from fidem.core.operation_engine.instructions import HandledEffect, RunTransactionInstruction
+from fidem.core.testing import YieldStep, assert_generator
+from fidem.core.transactions import (
     IMPLICIT_READ_TRANSACTION,
     IMPLICIT_WRITE_TRANSACTION,
     AnyTransaction,

@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 
-from fidem import (
+from fidem.core import (
     AtomicCommandDef,
     AtomicEffectful,
     AtomicEventHandlerDef,
@@ -149,7 +149,7 @@ def get_deliveries(query: GetDeliveriesQuery) -> QueryEffectful[Sequence[Deliver
 def make_operation_engine() -> OperationEngineImpl:
     return OperationEngineImpl(
         command_defs=[AtomicCommandDef("register_user", RegisterUserCommand, register_user)],
-        query_defs=[QueryDef("get_deliveries", GetDeliveriesQuery, get_deliveries)],
+        query_defs=[QueryDef(GetDeliveriesQuery, get_deliveries)],
         event_defs=[
             EventDef(
                 name="user_registered",

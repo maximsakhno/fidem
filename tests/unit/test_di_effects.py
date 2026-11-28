@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from fidem.di.core import (
+from fidem.core.di.core import (
     AmbiguousDependencyError,
     DependencyCycleError,
     DependencyKey,
@@ -19,7 +19,7 @@ from fidem.di.core import (
     UnsupportedParameterError,
     UnsupportedReturnTypeError,
 )
-from fidem.di.effects import (
+from fidem.core.di.effects import (
     EFFECT_CONTEXT_KEY,
     EFFECT_KEY,
     TRANSACTION_CONTEXT_KEY,
@@ -33,9 +33,9 @@ from fidem.di.effects import (
     Scopes,
     TransactionDependencyAccessError,
 )
-from fidem.effects import Effect, EffectContext
-from fidem.messages import Event, Message, MessageContext
-from fidem.transactions import IMPLICIT_WRITE_TRANSACTION, TransactionContext
+from fidem.core.effects import Effect, EffectContext
+from fidem.core.messages import Event, Message, MessageContext
+from fidem.core.transactions import IMPLICIT_WRITE_TRANSACTION, TransactionContext
 from tests.effects import TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
 from tests.messages import TestCommand
 

@@ -5,10 +5,10 @@ from typing import Final, Literal, cast
 
 from asyncpg import Connection, Pool
 
-from fidem.di.core import DependencyName
-from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime
-from fidem.errors import Error
-from fidem.transactions import IMPLICIT_READ_TRANSACTION, AnyTransaction, TransactionContext
+from fidem.core.di.core import DependencyName
+from fidem.core.di.effects import EffectDependencyDef, EffectDependencyLifetime
+from fidem.core.errors import Error
+from fidem.core.transactions import IMPLICIT_READ_TRANSACTION, AnyTransaction, TransactionContext
 
 __all__ = [
     "AsyncpgConnectionDef",

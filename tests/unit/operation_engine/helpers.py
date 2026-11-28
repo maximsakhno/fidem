@@ -2,18 +2,18 @@ from collections.abc import Callable, Collection, MutableSequence, Sequence
 from typing import Any
 from unittest.mock import ANY
 
-from fidem.effects import Effect, EffectContext, Effectful
-from fidem.guards import GuardDef, GuardInputDef
-from fidem.messages import Message, MessageContext, StagedHandler
-from fidem.operation_engine.definitions import (
+from fidem.core.effects import Effect, EffectContext, Effectful
+from fidem.core.guards import GuardDef, GuardInputDef
+from fidem.core.messages import Message, MessageContext, StagedHandler
+from fidem.core.operation_engine.definitions import (
     AtomicCommandDef,
     EventDef,
     MessageMiddlewareDef,
     QueryDef,
     StagedCommandDef,
 )
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.operation_engine.instructions import (
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.operation_engine.instructions import (
     CallEffectHandlerInstruction,
     EffectCall,
     ExecutionPlan,
@@ -21,8 +21,8 @@ from fidem.operation_engine.instructions import (
     Instruction,
     RunTransactionInstruction,
 )
-from fidem.testing import YieldStep, assert_generator
-from fidem.transactions import AnyTransaction
+from fidem.core.testing import YieldStep, assert_generator
+from fidem.core.transactions import AnyTransaction
 from tests.effects import TestDatabaseWriteEffect, TestExternalReadEffect, TestInternalEffect
 from tests.messages import TestCommand, TestQuery
 
@@ -73,7 +73,6 @@ def make_query_engine(
     return OperationEngineImpl(
         query_defs=[
             QueryDef(
-                name="test",
                 message_type=TestQuery,
                 handler=handler,  # pyright: ignore[reportArgumentType] - query tests also check what the handler type forbids
                 middleware_defs=query_middleware_defs,

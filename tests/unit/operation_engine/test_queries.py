@@ -3,13 +3,13 @@ from typing import Any
 
 import pytest
 
-from fidem.effects import Effect, Effectful
-from fidem.guards import GuardDef
-from fidem.messages import MessageContext, QueryEffect, QueryEffectful
-from fidem.operation_engine.definitions import MessageMiddlewareDef, MessageMiddlewareEffectful, Proceed, QueryDef
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.operation_engine.errors import DuplicateQueryDefError, MessageNotDefinedError, UnsupportedEffectError
-from fidem.testing import YieldStep, assert_generator
+from fidem.core.effects import Effect, Effectful
+from fidem.core.guards import GuardDef
+from fidem.core.messages import MessageContext, QueryEffect, QueryEffectful
+from fidem.core.operation_engine.definitions import MessageMiddlewareDef, MessageMiddlewareEffectful, Proceed, QueryDef
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.operation_engine.errors import DuplicateQueryDefError, MessageNotDefinedError, UnsupportedEffectError
+from fidem.core.testing import YieldStep, assert_generator
 from tests.effects import TestControlEffect, TestDatabaseWriteEffect, TestExternalReadEffect, TestExternalWriteEffect
 from tests.ids import type_name
 from tests.messages import TestCommand, TestEvent, TestQuery
@@ -140,7 +140,7 @@ class TestExecuteQuery:
         assert exc_info.value.args == (OtherQuery,)
 
     def test_raises_duplicate_query_def_error_when_define_queries_with_same_type(self) -> None:
-        query_defs = [QueryDef("first", TestQuery, handle_query), QueryDef("second", TestQuery, handle_query)]
+        query_defs = [QueryDef(TestQuery, handle_query), QueryDef(TestQuery, handle_query)]
 
         with pytest.raises(DuplicateQueryDefError) as exc_info:
             OperationEngineImpl(query_defs=query_defs)

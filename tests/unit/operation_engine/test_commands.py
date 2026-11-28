@@ -4,11 +4,11 @@ from typing import Any
 
 import pytest
 
-from fidem.di.core import DependencyNotFoundError, UnsupportedFunctionError
-from fidem.effects import Effect, Effectful
-from fidem.guards import GuardDef
-from fidem.messages import AtomicEffectful, Command, MessageContext, QueryEffect
-from fidem.operation_engine.definitions import (
+from fidem.core.di.core import DependencyNotFoundError, UnsupportedFunctionError
+from fidem.core.effects import Effect, Effectful
+from fidem.core.guards import GuardDef
+from fidem.core.messages import AtomicEffectful, Command, MessageContext, QueryEffect
+from fidem.core.operation_engine.definitions import (
     AtomicCommandDef,
     ExecutionMode,
     MessageMiddlewareDef,
@@ -16,16 +16,20 @@ from fidem.operation_engine.definitions import (
     Proceed,
     StagedCommandDef,
 )
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.operation_engine.errors import (
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.operation_engine.errors import (
     DuplicateCommandDefError,
     MessageNotDefinedError,
     UnsupportedAtomicResultError,
     UnsupportedEffectError,
 )
-from fidem.operation_engine.instructions import CallEffectHandlerInstruction, HandledEffect, RunTransactionInstruction
-from fidem.testing import YieldStep, assert_generator
-from fidem.transactions import IMPLICIT_READ_TRANSACTION, WriteTransaction, WriteTransactionEffectful
+from fidem.core.operation_engine.instructions import (
+    CallEffectHandlerInstruction,
+    HandledEffect,
+    RunTransactionInstruction,
+)
+from fidem.core.testing import YieldStep, assert_generator
+from fidem.core.transactions import IMPLICIT_READ_TRANSACTION, WriteTransaction, WriteTransactionEffectful
 from tests.effects import (
     TestControlEffect,
     TestDatabaseReadEffect,

@@ -7,21 +7,21 @@ import pytest
 from asyncpg import Connection, InvalidTextRepresentationError, Pool, Record, UniqueViolationError
 
 from fidem.asyncpg import AsyncpgConnectionDef, AsyncpgOutbox
-from fidem.di.effects import EffectDependencyDef
-from fidem.effects import DatabaseWriteEffect
-from fidem.environment import EffectDef, EnvironmentImpl
-from fidem.messages import AtomicEffectful, Event, StagedEffectful
-from fidem.operation_engine.definitions import (
+from fidem.core.di.effects import EffectDependencyDef
+from fidem.core.effects import DatabaseWriteEffect
+from fidem.core.environment import EffectDef, EnvironmentImpl
+from fidem.core.messages import AtomicEffectful, Event, StagedEffectful
+from fidem.core.operation_engine.definitions import (
     AtomicCommandDef,
     CommandDef,
     EventDef,
     StagedCommandDef,
     StagedEventHandlerDef,
 )
-from fidem.operation_engine.engine import OperationEngineImpl
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.serialization import Serializer
+from fidem.core.transactions import WriteTransaction, WriteTransactionEffectful
 from fidem.pydantic import PydanticSerializer
-from fidem.serialization import Serializer
-from fidem.transactions import WriteTransaction, WriteTransactionEffectful
 from tests.messages import TestCommand
 
 pytestmark = [

@@ -4,15 +4,15 @@ from typing import Any
 
 import pytest
 
-from fidem.di.core import UnsupportedFunctionError
-from fidem.di.effects import EffectDependencyDef, EffectDependencyLifetime, ScopeClosedError
-from fidem.effects import Effect, Effectful
-from fidem.environment import CallNext, EffectDef, EffectMiddlewareDef, EffectNotDefinedError, EnvironmentImpl
-from fidem.guards import GuardDef
-from fidem.messages import MessageContext, QueryEffect
-from fidem.operation_engine.definitions import StagedCommandDef
-from fidem.operation_engine.engine import OperationEngineImpl
-from fidem.operation_engine.instructions import CallEffectHandlerInstruction, EffectCall, ExecutionPlan
+from fidem.core.di.core import UnsupportedFunctionError
+from fidem.core.di.effects import EffectDependencyDef, EffectDependencyLifetime, ScopeClosedError
+from fidem.core.effects import Effect, Effectful
+from fidem.core.environment import CallNext, EffectDef, EffectMiddlewareDef, EffectNotDefinedError, EnvironmentImpl
+from fidem.core.guards import GuardDef
+from fidem.core.messages import MessageContext, QueryEffect
+from fidem.core.operation_engine.definitions import StagedCommandDef
+from fidem.core.operation_engine.engine import OperationEngineImpl
+from fidem.core.operation_engine.instructions import CallEffectHandlerInstruction, EffectCall, ExecutionPlan
 from tests.effects import TestExternalReadEffect, TestInternalEffect
 from tests.messages import TestCommand
 from tests.unit.environment.helpers import Config, Resource, make_instruction, make_operation_engine_mock
