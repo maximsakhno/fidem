@@ -18,7 +18,7 @@ from fidem.core.di.effects import (
     Scope,
     Scopes,
 )
-from fidem.core.effects import DatabaseEffect, Effect
+from fidem.core.effects import DatabaseEffect, Effect, EffectName, EffectVersion
 from fidem.core.errors import Error
 from fidem.core.messages import Command, Event, EventHandlerName, Message, MessageContext, MessageId, Query
 from fidem.core.operation_engine.definitions import EventDef
@@ -57,8 +57,12 @@ class EffectMiddlewareDef:
 
 @dataclass(frozen=True, slots=True)
 class EffectDef[EffectT: Effect[Any]]:
+    name: EffectName
+    """A stable name for serialization and storage, unique among the effects of the environment."""
     effect_type: type[EffectT]
     handler: Callable[..., Awaitable[object]]
+    version: EffectVersion = 1
+    """The version of the serialized effect and its result, it changes when they change incompatibly."""
     middleware_defs: Sequence[EffectMiddlewareDef] | None = None
     """Replace the environment middlewares, `None` keeps them."""
 
@@ -144,6 +148,7 @@ class EnvironmentImpl(Environment):
         effect_defs: Collection[EffectDef[Any]],
     ) -> Mapping[type[Effect[Any]], EffectDef[Any]]:
         check_unique(effect_defs, lambda effect_def: effect_def.effect_type, DuplicateEffectDefError)
+        check_unique(effect_defs, lambda effect_def: effect_def.name, DuplicateEffectDefError)
         return {effect_def.effect_type: effect_def for effect_def in effect_defs}
 
     def _prepare_effect(

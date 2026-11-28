@@ -109,7 +109,7 @@ def make_environment(
                 EventDef("followed", Followed, handler_defs=[StagedEventHandlerDef("followed", handle_followed)]),
             ],
         ),
-        effect_defs=[EffectDef(WorkEffect, deliveries.handle), *outbox.effect_defs],
+        effect_defs=[EffectDef("work", WorkEffect, deliveries.handle), *outbox.effect_defs],
         dependency_defs=outbox.dependency_defs,
         effect_middleware_defs=tuple(effect_middleware_defs),
     )
@@ -121,6 +121,11 @@ def statuses(rows: Sequence[MemoryOutboxRow]) -> Sequence[tuple[str, OutboxStatu
 
 @pytest.mark.timeout(5)
 class TestMemoryOutbox:
+    def test_bundles_write_of_events_and_dispatcher(self) -> None:
+        outbox = MemoryOutbox()
+
+        assert outbox.definitions == (*outbox.effect_defs, *outbox.dependency_defs)
+
     async def test_delivers_event_to_each_handler_with_its_message_id_and_marks_rows_done(self) -> None:
         outbox = MemoryOutbox()
         deliveries = Deliveries()

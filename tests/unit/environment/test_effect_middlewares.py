@@ -223,7 +223,7 @@ class TestEffectMiddlewares:
 
         environment = EnvironmentImpl(
             operation_engine=make_operation_engine_mock(execution_plan),
-            effect_defs=[EffectDef(TestInternalEffect, handler)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
             effect_middleware_defs=[EffectMiddlewareDef(middleware)],
         )
 
@@ -270,7 +270,7 @@ class TestEffectMiddlewares:
                 command_defs=[StagedCommandDef("test", TestCommand, handler)],
                 guard_defs=[GuardDef(config)],
             ),
-            effect_defs=[EffectDef(TestInternalEffect, handle_internal)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handle_internal)],
             effect_middleware_defs=[EffectMiddlewareDef(middleware)],
         )
 
@@ -480,7 +480,7 @@ class TestEffectMiddlewares:
 
         return EnvironmentImpl(
             operation_engine=make_operation_engine_mock(execution_plan),
-            effect_defs=[EffectDef(TestInternalEffect, handler, middleware_defs)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handler, middleware_defs=middleware_defs)],
             dependency_defs=dependency_defs,
             effect_middleware_defs=effect_middleware_defs,
         )

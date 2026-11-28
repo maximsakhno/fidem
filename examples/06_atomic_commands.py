@@ -16,24 +16,25 @@ from os import environ
 
 from asyncpg import Connection, Pool, create_pool
 
-from fidem.asyncpg import AsyncpgConnectionDef
-from fidem.core import (
-    AtomicCommandDef,
+from fidem import (
     AtomicEffectful,
     Command,
     DatabaseReadEffect,
     DatabaseWriteEffect,
     EffectContext,
-    EffectDef,
-    EffectDependencyDef,
-    EnvironmentImpl,
-    OperationEngineImpl,
+    Fidem,
     Query,
-    QueryDef,
     QueryEffectful,
     WriteTransaction,
     WriteTransactionEffectful,
+    command,
+    command_handler,
+    dependency,
+    effect,
+    effect_handler,
+    query_handler,
 )
+from fidem.asyncpg import AsyncpgConnectionDef
 
 DATABASE_URL = environ.get("DATABASE_URL", "postgresql://postgres@localhost:5432/postgres")
 SCHEMA = """
@@ -67,7 +68,8 @@ class InsufficientFundsError(Exception):
 
 
 # ── Dependencies ──────────────────────────────────────────
-# The pool lives while the environment runs, and each transaction takes its own connection from it.
+# The pool lives while the application runs, and each transaction takes its own connection from it.
+@dependency
 async def pool() -> AsyncGenerator[Pool]:
     async with create_pool(DATABASE_URL) as pool:
         await pool.execute(SCHEMA)
@@ -75,17 +77,20 @@ async def pool() -> AsyncGenerator[Pool]:
 
 
 # ── Effects ───────────────────────────────────────────────
+@effect("get_account")
 @dataclass(frozen=True, slots=True)
 class GetAccountEffect(DatabaseReadEffect[Account]):
     account_id: str
 
 
+@effect("change_balance")
 @dataclass(frozen=True, slots=True)
 class ChangeBalanceEffect(DatabaseWriteEffect[Account]):
     account_id: str
     amount: Decimal
 
 
+@effect("record_transfer")
 @dataclass(frozen=True, slots=True)
 class RecordTransferEffect(DatabaseWriteEffect[bool]):
     source_id: str
@@ -94,6 +99,7 @@ class RecordTransferEffect(DatabaseWriteEffect[bool]):
 
 
 # Handlers get a plain asyncpg connection, it is in the transaction of the effect.
+@effect_handler
 async def handle_get_account(connection: Connection, effect: GetAccountEffect) -> Account:
     row = await connection.fetchrow("SELECT id, balance FROM accounts WHERE id = $1", effect.account_id)
     if row is None:
@@ -102,6 +108,7 @@ async def handle_get_account(connection: Connection, effect: GetAccountEffect) -
 
 
 # The condition guards against concurrent transfers that passed the check in the read phase together.
+@effect_handler
 async def handle_change_balance(connection: Connection, effect: ChangeBalanceEffect) -> Account:
     row = await connection.fetchrow(
         "UPDATE accounts SET balance = balance + $2 WHERE id = $1 AND balance + $2 >= 0 RETURNING id, balance",
@@ -117,6 +124,7 @@ async def handle_change_balance(connection: Connection, effect: ChangeBalanceEff
 
 
 # A retried command repeats the effect with the same id, so the result tells whether an earlier attempt recorded it.
+@effect_handler
 async def handle_record_transfer(
     connection: Connection,
     effect: RecordTransferEffect,
@@ -134,6 +142,7 @@ async def handle_record_transfer(
 
 
 # ── Messages ──────────────────────────────────────────────
+@command("transfer")
 @dataclass(frozen=True, slots=True)
 class TransferCommand(Command[Transfer]):
     source_id: str
@@ -156,6 +165,7 @@ def record_transfer(command: TransferCommand) -> WriteTransactionEffectful[Trans
 
 
 # First the handler reads outside the transaction, then it returns the transaction with the writes.
+@command_handler
 def transfer(command: TransferCommand) -> AtomicEffectful[Transfer]:
     source = yield from GetAccountEffect(command.source_id)
     if source.balance < command.amount:
@@ -163,45 +173,45 @@ def transfer(command: TransferCommand) -> AtomicEffectful[Transfer]:
     return record_transfer(command)
 
 
+@query_handler
 def get_account(query: GetAccountQuery) -> QueryEffectful[Account]:
     return (yield from GetAccountEffect(query.account_id))
 
 
 async def main() -> None:
-    environment = EnvironmentImpl(
-        operation_engine=OperationEngineImpl(
-            command_defs=[AtomicCommandDef("transfer", TransferCommand, transfer)],
-            query_defs=[QueryDef(GetAccountQuery, get_account)],
-        ),
-        effect_defs=[
-            EffectDef(GetAccountEffect, handle_get_account),
-            EffectDef(ChangeBalanceEffect, handle_change_balance),
-            EffectDef(RecordTransferEffect, handle_record_transfer),
+    fidem = Fidem(
+        definitions=[
+            transfer,
+            get_account,
+            handle_get_account,
+            handle_change_balance,
+            handle_record_transfer,
+            pool,
+            AsyncpgConnectionDef(),
         ],
-        dependency_defs=[EffectDependencyDef(pool), AsyncpgConnectionDef()],
     )
 
-    async with environment:
+    async with fidem:
         print("\n=== Transfer commits both balances and the transfer together ===")
-        result = await environment.handle(TransferCommand("alice", "bob", Decimal(30)), message_id="transfer-1")
+        result = await fidem.handle(TransferCommand("alice", "bob", Decimal(30)), message_id="transfer-1")
         print(f"Result: {result}")
 
         print("\n=== A retry with the same message id does not move the money again ===")
-        result = await environment.handle(TransferCommand("alice", "bob", Decimal(30)), message_id="transfer-1")
+        result = await fidem.handle(TransferCommand("alice", "bob", Decimal(30)), message_id="transfer-1")
         print(f"Result: {result}")
 
         print("\n=== Insufficient funds stop the command before the transaction ===")
         try:
-            await environment.handle(TransferCommand("alice", "bob", Decimal(1000)))
+            await fidem.handle(TransferCommand("alice", "bob", Decimal(1000)))
         except InsufficientFundsError as exc:
             print(f"Error: insufficient funds on {exc}")
 
         print("\n=== A failed write rolls back the whole transaction ===")
         try:
-            await environment.handle(TransferCommand("alice", "carol", Decimal(10)))
+            await fidem.handle(TransferCommand("alice", "carol", Decimal(10)))
         except AccountNotFoundError as exc:
             print(f"Error: account {exc} not found")
-        alice = await environment.handle(GetAccountQuery("alice"))
+        alice = await fidem.handle(GetAccountQuery("alice"))
         print(f"Alice still has {alice.balance}")
         print()
 

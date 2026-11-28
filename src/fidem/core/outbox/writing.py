@@ -1,10 +1,12 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Final
 
-from fidem.core.effects import DatabaseWriteEffect, EffectId
-from fidem.core.messages import Event, EventHandlerName, EventVersion, MessageId, MessageName
+from fidem.core.effects import DatabaseWriteEffect, EffectId, EffectName
+from fidem.core.messages import Event, EventHandlerName, MessageId, MessageName, MessageVersion
 
 __all__ = [
+    "WRITE_OUTBOX_EFFECT_NAME",
     "OutboxEvent",
     "WriteOutboxEffect",
 ]
@@ -17,7 +19,7 @@ class OutboxEvent:
     event_id: EffectId
     source_message_id: MessageId
     name: MessageName
-    version: EventVersion
+    version: MessageVersion
     handlers: Sequence[EventHandlerName]
     event: Event
 
@@ -31,3 +33,7 @@ class WriteOutboxEffect(DatabaseWriteEffect[None]):
     """Writes a delivery of each event to each of its handlers and skips the deliveries already written."""
 
     events: Sequence[OutboxEvent]
+
+
+WRITE_OUTBOX_EFFECT_NAME: Final[EffectName] = "fidem.write_outbox"
+"""The name of the effect each driver of the outbox handles."""

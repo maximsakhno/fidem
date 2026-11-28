@@ -9,8 +9,8 @@ from fidem.core.messages import (
     Command,
     Event,
     EventHandlerName,
-    EventVersion,
     MessageName,
+    MessageVersion,
     Query,
     QueryHandler,
     StagedHandler,
@@ -68,6 +68,8 @@ class _CommandDef[ResultT, CommandHandlerT: Callable[..., Effectful[Any, Any]]]:
     """A stable name for serialization and storage."""
     message_type: type[Command[ResultT]]
     handler: CommandHandlerT
+    version: MessageVersion = 1
+    """The version of the serialized command, it changes when the command changes incompatibly."""
     middleware_defs: Sequence[MessageMiddlewareDef] | None = None
     """Replace the engine middlewares, `None` keeps them."""
     execution_mode: ExecutionMode = ExecutionMode.EPHEMERAL
@@ -123,5 +125,5 @@ type AnyEventHandlerDef = AtomicEventHandlerDef | StagedEventHandlerDef
 class EventDef[EventT: Event]:
     name: MessageName
     event_type: type[EventT]
-    version: EventVersion = 1
+    version: MessageVersion = 1
     handler_defs: Sequence[AnyEventHandlerDef] = ()

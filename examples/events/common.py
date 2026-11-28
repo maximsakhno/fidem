@@ -2,36 +2,38 @@
 
 The command saves the user and publishes its event in one transaction. The dispatcher of the outbox delivers
 the event to each handler in the background. Sending the welcome email fails once and is retried, and the event
-it publishes is delivered too. Each variant gives only the handlers of the effects and the dependencies.
+it publishes is delivered too. Each variant discovers the declarations of this module and adds the handlers of
+the effects of its storage.
 """
 
 from asyncio import sleep, timeout
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 
-from fidem.core import (
-    AtomicCommandDef,
+from fidem import (
     AtomicEffectful,
-    AtomicEventHandlerDef,
     Command,
     DatabaseReadEffect,
     DatabaseWriteEffect,
-    EffectDef,
-    Environment,
     Event,
-    EventDef,
     ExternalWriteEffect,
-    OperationEngineImpl,
+    Fidem,
     OutboxDispatcherOptions,
     Query,
-    QueryDef,
     QueryEffectful,
     RetryPolicy,
     StagedEffectful,
-    StagedEventHandlerDef,
     WriteTransaction,
     WriteTransactionEffectful,
+    command,
+    command_handler,
+    dependency,
+    effect,
+    effect_handler,
+    event,
+    event_handler,
+    query_handler,
 )
 
 # A short delay shows the retry without waiting.
@@ -39,18 +41,21 @@ DISPATCHER_OPTIONS = OutboxDispatcherOptions(retry_policy=RetryPolicy(initial_de
 
 
 # ── Messages ──────────────────────────────────────────────
+@command("register_user")
 @dataclass(frozen=True, slots=True)
 class RegisterUserCommand(Command[str]):
     user_id: str
     email: str
 
 
+@event("user_registered")
 @dataclass(frozen=True, slots=True)
 class UserRegistered(Event):
     user_id: str
     email: str
 
 
+@event("welcome_sent")
 @dataclass(frozen=True, slots=True)
 class WelcomeSent(Event):
     user_id: str
@@ -70,12 +75,14 @@ class GetDeliveriesQuery(Query[Sequence[Delivery]]):
 
 
 # ── Effects ───────────────────────────────────────────────
+@effect("save_user")
 @dataclass(frozen=True, slots=True)
 class SaveUserEffect(DatabaseWriteEffect[None]):
     user_id: str
     email: str
 
 
+@effect("record_activity")
 @dataclass(frozen=True, slots=True)
 class RecordActivityEffect(DatabaseWriteEffect[None]):
     """A repeated delivery repeats the effect with the same id, so its handler skips the write."""
@@ -84,11 +91,13 @@ class RecordActivityEffect(DatabaseWriteEffect[None]):
     action: str
 
 
+@effect("get_deliveries")
 @dataclass(frozen=True, slots=True)
 class GetDeliveriesEffect(DatabaseReadEffect[Sequence[Delivery]]):
     """Reads the deliveries of the outbox, so the example sees when the dispatcher has delivered everything."""
 
 
+@effect("send_email")
 @dataclass(frozen=True, slots=True)
 class SendEmailEffect(ExternalWriteEffect[None]):
     email: str
@@ -117,11 +126,13 @@ def save_user(command: RegisterUserCommand) -> WriteTransactionEffectful[str, Us
     return command.user_id
 
 
+@command_handler
 def register_user(command: RegisterUserCommand) -> AtomicEffectful[str, UserRegistered]:
     yield from ()
     return save_user(command)
 
 
+@event_handler
 def send_welcome(event: UserRegistered) -> StagedEffectful[None, WelcomeSent]:
     yield from SendEmailEffect(event.email, "Welcome!")
     yield from WelcomeSent(event.user_id)
@@ -132,59 +143,47 @@ def record_activity(user_id: str, action: str) -> WriteTransactionEffectful[None
     yield from RecordActivityEffect(user_id, action)
 
 
+@event_handler(name="record")
 def record_registration(event: UserRegistered) -> AtomicEffectful[None]:
     yield from ()
     return record_activity(event.user_id, "registration")
 
 
+@event_handler(name="record")
 def record_welcome(event: WelcomeSent) -> AtomicEffectful[None]:
     yield from ()
     return record_activity(event.user_id, "welcome")
 
 
+@query_handler
 def get_deliveries(query: GetDeliveriesQuery) -> QueryEffectful[Sequence[Delivery]]:
     return (yield from GetDeliveriesEffect())
 
 
-def make_operation_engine() -> OperationEngineImpl:
-    return OperationEngineImpl(
-        command_defs=[AtomicCommandDef("register_user", RegisterUserCommand, register_user)],
-        query_defs=[QueryDef(GetDeliveriesQuery, get_deliveries)],
-        event_defs=[
-            EventDef(
-                name="user_registered",
-                event_type=UserRegistered,
-                handler_defs=[
-                    StagedEventHandlerDef("send_welcome", send_welcome),
-                    AtomicEventHandlerDef("record", record_registration),
-                ],
-            ),
-            EventDef(
-                name="welcome_sent",
-                event_type=WelcomeSent,
-                handler_defs=[AtomicEventHandlerDef("record", record_welcome)],
-            ),
-        ],
-    )
+# The mailer keeps its state while the application runs, so it is a dependency of the handler of the effect.
+@dependency
+async def mailer() -> AsyncGenerator[Mailer]:
+    yield Mailer()
 
 
-def make_mailer_def() -> EffectDef[SendEmailEffect]:
-    return EffectDef(SendEmailEffect, Mailer().send)
+@effect_handler
+async def handle_send_email(effect: SendEmailEffect, mailer: Mailer) -> None:
+    await mailer.send(effect)
 
 
 # ── Scenario ──────────────────────────────────────────────
-async def register_and_report(environment: Environment) -> None:
-    print("registered", await environment.handle(RegisterUserCommand("u1", "alice@example.com")))
-    deliveries = await _wait_for_deliveries(environment)
+async def register_and_report(fidem: Fidem) -> None:
+    print("registered", await fidem.handle(RegisterUserCommand("u1", "alice@example.com")))
+    deliveries = await _wait_for_deliveries(fidem)
     for delivery in sorted(deliveries, key=lambda delivery: (delivery.event_name, delivery.handler)):
         print(f"{delivery.event_name} → {delivery.handler}: {delivery.status} after {delivery.attempts} attempts")
 
 
-async def _wait_for_deliveries(environment: Environment) -> Sequence[Delivery]:
+async def _wait_for_deliveries(fidem: Fidem) -> Sequence[Delivery]:
     """A handler writes the events it publishes before its delivery is done, so no pending one means all are done."""
     async with timeout(10):
         while True:
-            deliveries = await environment.handle(GetDeliveriesQuery())
+            deliveries = await fidem.handle(GetDeliveriesQuery())
             if all(delivery.status != "pending" for delivery in deliveries):
                 return deliveries
             await sleep(0.05)

@@ -33,6 +33,7 @@ __all__ = [
     "check_generator_function",
     "get_arguments",
     "get_parameters",
+    "get_return_type",
     "make_key",
     "make_message_dependencies",
 ]
@@ -120,7 +121,7 @@ def get_parameters(function: Callable[..., object]) -> Mapping[ParameterName, ob
     return parameters
 
 
-def _get_return_type(function: Callable[..., object]) -> object:
+def get_return_type(function: Callable[..., object]) -> object:
     return_type = _get_signature(function).return_annotation
     if return_type is Signature.empty:
         raise MissingAnnotationError(function, "return")
@@ -134,7 +135,7 @@ def make_key(
     dependency_type: object,
 ) -> DependencyKey:
     """Makes the key of the value the function produces."""
-    return_type = _get_return_type(function)
+    return_type = get_return_type(function)
     if get_origin(return_type) not in return_origins:
         raise UnsupportedReturnTypeError(function, return_type)
     return DependencyKey(name=name, type=get_args(return_type)[0] if dependency_type is None else dependency_type)

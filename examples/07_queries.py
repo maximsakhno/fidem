@@ -16,26 +16,27 @@ from os import environ
 
 from asyncpg import Connection, Pool, create_pool
 
-from fidem.asyncpg import AsyncpgConnectionDef, AsyncpgTransactionOptions
-from fidem.core import (
-    AtomicCommandDef,
+from fidem import (
     AtomicEffectful,
     Command,
     DatabaseReadEffect,
     DatabaseWriteEffect,
     EffectContext,
-    EffectDef,
-    EffectDependencyDef,
-    EnvironmentImpl,
-    OperationEngineImpl,
+    Fidem,
     Query,
-    QueryDef,
     QueryEffectful,
     ReadTransaction,
     ReadTransactionEffectful,
     WriteTransaction,
     WriteTransactionEffectful,
+    command,
+    command_handler,
+    dependency,
+    effect,
+    effect_handler,
+    query_handler,
 )
+from fidem.asyncpg import AsyncpgConnectionDef, AsyncpgTransactionOptions
 
 DATABASE_URL = environ.get("DATABASE_URL", "postgresql://postgres@localhost:5432/postgres")
 SCHEMA = """
@@ -76,6 +77,7 @@ class Statement:
 
 
 # ── Dependencies ──────────────────────────────────────────
+@dependency
 async def pool() -> AsyncGenerator[Pool]:
     async with create_pool(DATABASE_URL) as pool:
         await pool.execute(SCHEMA)
@@ -83,21 +85,25 @@ async def pool() -> AsyncGenerator[Pool]:
 
 
 # ── Effects ───────────────────────────────────────────────
+@effect("get_balance")
 @dataclass(frozen=True, slots=True)
 class GetBalanceEffect(DatabaseReadEffect[Decimal]):
     account_id: str
 
 
+@effect("list_transfers")
 @dataclass(frozen=True, slots=True)
 class ListTransfersEffect(DatabaseReadEffect[Sequence[Transfer]]):
     account_id: str
 
 
+@effect("record_transfer")
 @dataclass(frozen=True, slots=True)
 class RecordTransferEffect(DatabaseWriteEffect[None]):
     transfer: Transfer
 
 
+@effect_handler
 async def handle_get_balance(connection: Connection, effect: GetBalanceEffect) -> Decimal:
     balance = await connection.fetchval("SELECT balance FROM accounts WHERE id = $1", effect.account_id)
     if balance is None:
@@ -105,6 +111,7 @@ async def handle_get_balance(connection: Connection, effect: GetBalanceEffect) -
     return balance
 
 
+@effect_handler
 async def handle_list_transfers(connection: Connection, effect: ListTransfersEffect) -> Sequence[Transfer]:
     rows = await connection.fetch(
         "SELECT source_id, target_id, amount FROM transfers WHERE $1 IN (source_id, target_id) ORDER BY position",
@@ -114,6 +121,7 @@ async def handle_list_transfers(connection: Connection, effect: ListTransfersEff
 
 
 # A retried command repeats the effect with the same id, so the balances change only with the first record.
+@effect_handler
 async def handle_record_transfer(connection: Connection, effect: RecordTransferEffect, context: EffectContext) -> None:
     transfer = effect.transfer
     recorded_id = await connection.fetchval(
@@ -136,6 +144,7 @@ async def handle_record_transfer(connection: Connection, effect: RecordTransferE
 
 
 # ── Messages ──────────────────────────────────────────────
+@command("transfer")
 @dataclass(frozen=True, slots=True)
 class TransferCommand(Command[Transfer]):
     source_id: str
@@ -165,28 +174,26 @@ def read_statement(account_id: str) -> ReadTransactionEffectful[Statement]:
     return Statement(account_id=account_id, balance=balance, transfers=transfers)
 
 
+@command_handler
 def transfer(command: TransferCommand) -> AtomicEffectful[Transfer]:
     yield from ()
     return record_transfer(Transfer(source_id=command.source_id, target_id=command.target_id, amount=command.amount))
 
 
+@query_handler
 def get_statement(query: GetStatementQuery) -> QueryEffectful[Statement]:
     return (yield from read_statement(query.account_id))
 
 
 async def main() -> None:
-    environment = EnvironmentImpl(
-        operation_engine=OperationEngineImpl(
-            command_defs=[AtomicCommandDef("transfer", TransferCommand, transfer)],
-            query_defs=[QueryDef(GetStatementQuery, get_statement)],
-        ),
-        effect_defs=[
-            EffectDef(GetBalanceEffect, handle_get_balance),
-            EffectDef(ListTransfersEffect, handle_list_transfers),
-            EffectDef(RecordTransferEffect, handle_record_transfer),
-        ],
-        dependency_defs=[
-            EffectDependencyDef(pool),
+    fidem = Fidem(
+        definitions=[
+            transfer,
+            get_statement,
+            handle_get_balance,
+            handle_list_transfers,
+            handle_record_transfer,
+            pool,
             # Read transactions are repeatable read and write transactions are read committed unless set otherwise.
             AsyncpgConnectionDef(
                 transaction_options={record_transfer: AsyncpgTransactionOptions(isolation="serializable")},
@@ -196,12 +203,12 @@ async def main() -> None:
 
     async def transfer_to_bob() -> None:
         for _ in range(5):
-            await environment.handle(TransferCommand("alice", "bob", Decimal(10)))
+            await fidem.handle(TransferCommand("alice", "bob", Decimal(10)))
 
     async def read_statements_of_bob() -> Sequence[Statement]:
-        return [await environment.handle(GetStatementQuery("bob")) for _ in range(5)]
+        return [await fidem.handle(GetStatementQuery("bob")) for _ in range(5)]
 
-    async with environment:
+    async with fidem:
         print("\n=== Statements read while transfers run always add up ===")
         _, statements = await gather(transfer_to_bob(), read_statements_of_bob())
         for statement in statements:
@@ -210,7 +217,7 @@ async def main() -> None:
 
         print("\n=== Insufficient funds stop the transfer inside the transaction ===")
         try:
-            await environment.handle(TransferCommand("alice", "bob", Decimal(1000)))
+            await fidem.handle(TransferCommand("alice", "bob", Decimal(1000)))
         except InsufficientFundsError as exc:
             print(f"Error: insufficient funds on {exc}")
         print()

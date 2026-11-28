@@ -7,13 +7,15 @@ from typing import Any, Final, NamedTuple, Self, cast
 
 from asyncpg import Connection, Pool, Record
 
+from fidem._bundle import Bundle
 from fidem.asyncpg.migrations import MigrationSection, load_section
 from fidem.core.di.effects import EffectDependencyDef, EffectDependencyLifetime
 from fidem.core.effects import EffectId
 from fidem.core.environment import EffectDef, EffectMiddlewareDef, Environment
-from fidem.core.messages import Event, EventHandlerName, EventVersion, MessageId, MessageName
+from fidem.core.messages import Event, EventHandlerName, MessageId, MessageName, MessageVersion
 from fidem.core.operation_engine.definitions import EventDef
 from fidem.core.outbox import (
+    WRITE_OUTBOX_EFFECT_NAME,
     OutboxDelivery,
     OutboxDispatcher,
     OutboxDispatcherOptions,
@@ -45,7 +47,7 @@ class _Row(NamedTuple):
     source_message_id: MessageId
     handler: EventHandlerName
     event_name: MessageName
-    event_version: EventVersion
+    event_version: MessageVersion
     payload: str
 
 
@@ -84,7 +86,7 @@ async def _write_and_notify(connection: Connection, serializer: Serializer, effe
 
 
 class _StoredEvent(NamedTuple):
-    version: EventVersion
+    version: MessageVersion
     payload: str
 
 
@@ -166,11 +168,11 @@ class AsyncpgOutboxStore(OutboxStore[_StoredEvent]):
     def __init__(self, pool: Pool, serializer: Serializer, event_defs: Collection[EventDef[Any]]) -> None:
         self._pool: Pool = pool
         # Codecs are prepared here so that an unsupported event fails the start.
-        self._codecs: Mapping[tuple[MessageName, EventVersion], Codec[Any]] = {
+        self._codecs: Mapping[tuple[MessageName, MessageVersion], Codec[Any]] = {
             (event_def.name, event_def.version): serializer.codec(event_def.event_type) for event_def in event_defs
         }
         names: MutableSequence[MessageName] = []
-        versions: MutableSequence[EventVersion] = []
+        versions: MutableSequence[MessageVersion] = []
         handlers: MutableSequence[EventHandlerName] = []
         for event_def in event_defs:
             for handler_def in event_def.handler_defs:
@@ -282,11 +284,12 @@ class AsyncpgOutboxStore(OutboxStore[_StoredEvent]):
         await wait_for_change(self._notified, max_wait)
 
 
-class AsyncpgOutbox:
+class AsyncpgOutbox(Bundle):
     """The outbox in the table of `OUTBOX_SECTION` with the `Pool`, `Connection` and `Serializer` dependencies.
 
-    The environment gets `effect_defs`, which write events in the transaction that publishes them, and
-    `dependency_defs`, whose service dispatches them. A process that only writes events gets only `effect_defs`.
+    The bundle holds `effect_defs`, which write events in the transaction that publishes them, and `dependency_defs`,
+    whose service dispatches them. A process that only writes events gets `writer` with `effect_defs` only.
+    `EnvironmentImpl` gets `effect_defs` and `dependency_defs` by themselves.
 
     `notify` wakes dispatchers up on commit, it costs a lock that queues up the commits that notify.
     The dispatcher holds a connection of the pool to listen to notifications, so the pool needs at least one more
@@ -305,6 +308,7 @@ class AsyncpgOutbox:
         self._options: OutboxDispatcherOptions = options
         self.effect_defs: Final[Sequence[EffectDef[WriteOutboxEffect]]] = (
             EffectDef(
+                name=WRITE_OUTBOX_EFFECT_NAME,
                 effect_type=WriteOutboxEffect,
                 handler=_write_and_notify if notify else _write,
                 middleware_defs=middleware_defs,
@@ -313,6 +317,9 @@ class AsyncpgOutbox:
         self.dependency_defs: Final[Sequence[EffectDependencyDef[object]]] = (
             EffectDependencyDef(self._dispatcher, lifetime=EffectDependencyLifetime.SERVICE),
         )
+        self.writer: Final[Bundle] = Bundle(*self.effect_defs)
+        """Writes events without dispatching them."""
+        super().__init__(*self.effect_defs, *self.dependency_defs)
 
     async def _dispatcher(
         self,

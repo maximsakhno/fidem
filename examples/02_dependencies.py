@@ -4,20 +4,21 @@ from collections.abc import AsyncGenerator, MutableMapping
 from dataclasses import dataclass, replace
 from typing import Any, Final
 
-from fidem.core import (
+from fidem import (
     Command,
     DatabaseReadEffect,
     DatabaseWriteEffect,
     Effect,
     EffectContext,
-    EffectDef,
-    EffectDependencyDef,
     EffectDependencyLifetime,
-    EnvironmentImpl,
+    Fidem,
     MessageContext,
-    OperationEngineImpl,
-    StagedCommandDef,
     StagedEffectful,
+    command,
+    command_handler,
+    dependency,
+    effect,
+    effect_handler,
 )
 
 
@@ -88,17 +89,20 @@ USERS: MutableMapping[str, User] = {"u1": User(id="u1", name="Alice")}
 
 
 # A factory of a dependency that needs no closing yields it and ends.
+@dependency
 async def settings() -> AsyncGenerator[Settings]:
     yield Settings(database_url="db://primary", replica_url="db://replica")
 
 
 # Both databases have the type `Database`, handlers choose one by the parameter name.
+@dependency(name="primary")
 async def primary(settings: Settings) -> AsyncGenerator[Database]:
     print(f"[app] connecting to {settings.database_url}")
     yield InMemoryDatabase(settings.database_url, USERS)
     print(f"[app] disconnecting from {settings.database_url}")
 
 
+@dependency(name="replica")
 async def replica(settings: Settings) -> AsyncGenerator[Database]:
     print(f"[app] connecting to {settings.replica_url}")
     yield InMemoryDatabase(settings.replica_url, USERS)
@@ -106,6 +110,7 @@ async def replica(settings: Settings) -> AsyncGenerator[Database]:
 
 
 # The log lives while the message is handled.
+@dependency(lifetime=EffectDependencyLifetime.MESSAGE)
 async def message_log(message_context: MessageContext) -> AsyncGenerator[MessageLog]:
     log = MessageLog(f"[message {message_context.message_id}]")
     log.write("start")
@@ -116,6 +121,7 @@ async def message_log(message_context: MessageContext) -> AsyncGenerator[Message
 
 
 # The transaction lives while its database effects run and sees the error that ended it.
+@dependency(lifetime=EffectDependencyLifetime.TRANSACTION)
 async def transaction(primary: Database, log: MessageLog) -> AsyncGenerator[Transaction]:
     log.write("begin")
     transaction = Transaction(primary)
@@ -129,28 +135,33 @@ async def transaction(primary: Database, log: MessageLog) -> AsyncGenerator[Tran
 
 
 # A factory may depend on the effect through any of its base classes.
+@dependency(lifetime=EffectDependencyLifetime.EFFECT)
 async def effect_log(effect: Effect[Any], effect_context: EffectContext) -> AsyncGenerator[EffectLog]:
     yield EffectLog(f"[effect {type(effect).__name__} {effect_context.effect_id[:8]}]")
 
 
 # ── Effects ───────────────────────────────────────────────
+@effect("get_user")
 @dataclass(frozen=True, slots=True)
 class GetUserEffect(DatabaseReadEffect[User]):
     user_id: str
 
 
+@effect("save_user")
 @dataclass(frozen=True, slots=True)
 class SaveUserEffect(DatabaseWriteEffect[User]):
     user: User
 
 
 # Handler parameters are dependencies too, the order and the set of parameters are free.
+@effect_handler
 async def handle_get_user(replica: Database, effect: GetUserEffect, log: EffectLog) -> User:
     log.write(f"reading user {effect.user_id} from the replica")
     return await replica.get_user(effect.user_id)
 
 
 # Only handlers of database effects may depend on the transaction.
+@effect_handler
 async def handle_save_user(effect: SaveUserEffect, transaction: Transaction, log: EffectLog) -> User:
     log.write(f"saving user {effect.user.id} in the transaction")
     transaction.save_user(effect.user)
@@ -160,44 +171,42 @@ async def handle_save_user(effect: SaveUserEffect, transaction: Transaction, log
 
 
 # ── Command ───────────────────────────────────────────────
+@command("rename_user")
 @dataclass(frozen=True, slots=True)
 class RenameUserCommand(Command[User]):
     user_id: str
     name: str
 
 
+@command_handler
 def rename_user(context: MessageContext, command: RenameUserCommand) -> StagedEffectful[User]:
     user = yield from GetUserEffect(command.user_id)
     return (yield from SaveUserEffect(replace(user, name=command.name)))
 
 
 async def main() -> None:
-    environment = EnvironmentImpl(
-        operation_engine=OperationEngineImpl(
-            command_defs=[StagedCommandDef("rename_user", RenameUserCommand, rename_user)],
-        ),
-        effect_defs=[
-            EffectDef(GetUserEffect, handle_get_user),
-            EffectDef(SaveUserEffect, handle_save_user),
-        ],
-        dependency_defs=[
-            EffectDependencyDef(settings),
-            EffectDependencyDef(primary, name="primary"),
-            EffectDependencyDef(replica, name="replica"),
-            EffectDependencyDef(message_log, lifetime=EffectDependencyLifetime.MESSAGE),
-            EffectDependencyDef(transaction, lifetime=EffectDependencyLifetime.TRANSACTION),
-            EffectDependencyDef(effect_log, lifetime=EffectDependencyLifetime.EFFECT),
+    fidem = Fidem(
+        definitions=[
+            rename_user,
+            handle_get_user,
+            handle_save_user,
+            settings,
+            primary,
+            replica,
+            message_log,
+            transaction,
+            effect_log,
         ],
     )
 
-    async with environment:
+    async with fidem:
         print("\n=== Successful rename ===")
-        user = await environment.handle(RenameUserCommand(user_id="u1", name="Bob"), message_id="rename-ok")
+        user = await fidem.handle(RenameUserCommand(user_id="u1", name="Bob"), message_id="rename-ok")
         print(f"Result: {user}, stored: {USERS['u1']}")
 
         print("\n=== Failed rename rolls the transaction back ===")
         try:
-            await environment.handle(RenameUserCommand(user_id="u1", name=""), message_id="rename-failed")
+            await fidem.handle(RenameUserCommand(user_id="u1", name=""), message_id="rename-failed")
         except ValueError as exc:
             print(f"Error: {exc}, stored: {USERS['u1']}")
         print()

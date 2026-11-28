@@ -477,14 +477,18 @@ def make_environment(
     return EnvironmentImpl(
         operation_engine=OperationEngineImpl(command_defs=command_defs, query_defs=query_defs),
         effect_defs=[
-            EffectDef(GetItemEffect, handle_get_item),
-            EffectDef(GetItemAndChangeItConcurrentlyEffect, handle_get_item_and_change_it_concurrently),
-            EffectDef(SaveItemEffect, handle_save_item),
-            EffectDef(SaveItemAsReadEffect, handle_save_item_as_read),
-            EffectDef(ReadTransactionStateEffect, handle_transaction_state),
-            EffectDef(WriteTransactionStateEffect, handle_transaction_state),
-            EffectDef(FailEffect, handle_fail),
-            EffectDef(FailQueryEffect, handle_fail_query),
+            EffectDef("get_item", GetItemEffect, handle_get_item),
+            EffectDef(
+                "get_item_and_change_it_concurrently",
+                GetItemAndChangeItConcurrentlyEffect,
+                handle_get_item_and_change_it_concurrently,
+            ),
+            EffectDef("save_item", SaveItemEffect, handle_save_item),
+            EffectDef("save_item_as_read", SaveItemAsReadEffect, handle_save_item_as_read),
+            EffectDef("read_transaction_state", ReadTransactionStateEffect, handle_transaction_state),
+            EffectDef("write_transaction_state", WriteTransactionStateEffect, handle_transaction_state),
+            EffectDef("fail", FailEffect, handle_fail),
+            EffectDef("fail_query", FailQueryEffect, handle_fail_query),
         ],
         dependency_defs=[
             EffectDependencyDef(shared_pool),

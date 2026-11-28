@@ -6,10 +6,12 @@ from enum import Enum
 from heapq import nsmallest
 from typing import Final
 
+from fidem._bundle import Bundle
 from fidem.core.di.effects import EffectDependencyDef, EffectDependencyLifetime
 from fidem.core.environment import EffectDef, EffectMiddlewareDef, Environment
 from fidem.core.messages import Event, EventHandlerName, MessageId, MessageName
 from fidem.core.outbox import (
+    WRITE_OUTBOX_EFFECT_NAME,
     OutboxDelivery,
     OutboxDispatcher,
     OutboxDispatcherOptions,
@@ -184,10 +186,11 @@ class _TransactionEvents:
     events: MutableSequence[OutboxEvent] = field(default_factory=list)
 
 
-class MemoryOutbox:
+class MemoryOutbox(Bundle):
     """The outbox in the memory of the process: its rows do not survive the process and its events are not serialized.
 
-    The environment gets `effect_defs` and `dependency_defs`, its dispatcher runs as a service.
+    `Fidem` gets the outbox as a bundle, `EnvironmentImpl` gets `effect_defs` and `dependency_defs`. Its dispatcher
+    runs as a service.
     """
 
     def __init__(
@@ -200,12 +203,18 @@ class MemoryOutbox:
         self._store: _MemoryOutboxStore = _MemoryOutboxStore()
         self._options: OutboxDispatcherOptions = options
         self.effect_defs: Final[Sequence[EffectDef[WriteOutboxEffect]]] = (
-            EffectDef(effect_type=WriteOutboxEffect, handler=self._write, middleware_defs=middleware_defs),
+            EffectDef(
+                name=WRITE_OUTBOX_EFFECT_NAME,
+                effect_type=WriteOutboxEffect,
+                handler=self._write,
+                middleware_defs=middleware_defs,
+            ),
         )
         self.dependency_defs: Final[Sequence[EffectDependencyDef[object]]] = (
             EffectDependencyDef(self._transaction_events, lifetime=EffectDependencyLifetime.TRANSACTION),
             EffectDependencyDef(self._dispatcher, lifetime=EffectDependencyLifetime.SERVICE),
         )
+        super().__init__(*self.effect_defs, *self.dependency_defs)
 
     @property
     def rows(self) -> Sequence[MemoryOutboxRow]:

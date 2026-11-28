@@ -117,7 +117,7 @@ class TestServiceLifecycle:
             operation_engine=make_operation_engine_mock(
                 GeneratorFunctionStub(steps=[YieldStep(make_instruction(), "effect_result")], return_value="result")
             ),
-            effect_defs=[EffectDef(TestInternalEffect, handler)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
             dependency_defs=[EffectDependencyDef(service, lifetime=SERVICE)],
         )
 
@@ -196,7 +196,7 @@ class TestServiceAccess:
         with pytest.raises(DependencyLifetimeError) as exc_info:
             EnvironmentImpl(
                 operation_engine=make_operation_engine_mock(),
-                effect_defs=[EffectDef(TestInternalEffect, handler)],
+                effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
                 dependency_defs=[EffectDependencyDef(service, lifetime=SERVICE)],
             )
 
@@ -209,7 +209,7 @@ class TestServiceAccess:
         with pytest.raises(DependencyLifetimeError) as exc_info:
             EnvironmentImpl(
                 operation_engine=make_operation_engine_mock(),
-                effect_defs=[EffectDef(TestInternalEffect, handler)],
+                effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
             )
 
         assert exc_info.value.args == (handler, ENVIRONMENT_KEY)
@@ -253,7 +253,7 @@ class TestDeliver:
         )
         environment = EnvironmentImpl(
             operation_engine=operation_engine,
-            effect_defs=[EffectDef(TestInternalEffect, handler)],
+            effect_defs=[EffectDef("test_internal", TestInternalEffect, handler)],
         )
 
         async with environment:

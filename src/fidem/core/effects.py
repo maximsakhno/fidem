@@ -11,6 +11,8 @@ __all__ = [
     "EffectContext",
     "EffectHandler",
     "EffectId",
+    "EffectName",
+    "EffectVersion",
     "Effectful",
     "ExternalEffect",
     "ExternalReadEffect",
@@ -31,6 +33,9 @@ type Effectful[ResultT, EffectT: Effect[Any]] = Generator[EffectT, Any, ResultT]
 
 
 type EffectId = str
+type EffectName = str
+"""A stable name of an effect type for serialization and storage."""
+type EffectVersion = int
 
 
 @dataclass(slots=True, frozen=True)
